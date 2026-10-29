@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -184,6 +185,7 @@ struct Tokenizer<'a> {
     tokens: Vec<Tok>,
     heredocs: Vec<PendingHeredoc>,
     delimiter_next: Option<(bool, u32)>,
+    closes: BTreeMap<usize, usize>,
 }
 
 fn error(line: u32, kind: LexErrorKind) -> LexError {
@@ -225,6 +227,7 @@ impl<'a> Tokenizer<'a> {
             tokens: Vec::new(),
             heredocs: Vec::new(),
             delimiter_next: None,
+            closes: BTreeMap::new(),
         }
     }
 
@@ -252,12 +255,18 @@ impl<'a> Tokenizer<'a> {
         true
     }
 
+    fn word_end(&self, off: usize) -> bool {
+        match self.peek(off) {
+            None => true,
+            Some(b'\r') => self.peek(off + 1) == Some(b'\n'),
+            Some(c) => ends_word(c),
+        }
+    }
+
     fn at_word_end(&self) -> bool {
         match self.peek(0) {
-            None => true,
-            Some(b'\r') => self.peek(1) == Some(b'\n'),
             Some(b'<' | b'>') => self.peek(1) != Some(b'('),
-            Some(c) => ends_word(c),
+            _ => self.word_end(0),
         }
     }
 
@@ -321,16 +330,21 @@ impl<'a> Tokenizer<'a> {
                     self.op(op);
                 }
                 b'(' if self.peek(1) == Some(b'(') => {
-                    let (i, line) = (self.i, self.line);
-                    let mut scratch = Vec::new();
-                    let mut inner_close = None;
-                    self.copy_paren_tracked(&mut scratch, &mut inner_close)?;
-                    if inner_close == Some(scratch.len() - 1) {
-                        self.delimiter_next = None;
-                        self.tokens.push(Tok::Op(Op::Arith));
-                    } else {
-                        (self.i, self.line) = (i, line);
-                        self.op(Op::LParen);
+                    let at = self.i;
+                    if !self.closes.contains_key(&at) {
+                        let line = self.line;
+                        self.copy_paren(&mut Vec::new())?;
+                        (self.i, self.line) = (at, line);
+                    }
+                    match (self.closes.get(&at), self.closes.get(&(at + 1))) {
+                        (Some(&outer), Some(&inner)) if inner + 1 == outer => {
+                            let newlines = self.b[at..=outer].iter().filter(|&&c| c == b'\n');
+                            self.line += newlines.count() as u32;
+                            self.i = outer + 1;
+                            self.delimiter_next = None;
+                            self.tokens.push(Tok::Op(Op::Arith));
+                        }
+                        _ => self.op(Op::LParen),
                     }
                 }
                 b'(' => self.op(Op::LParen),
@@ -449,7 +463,8 @@ impl<'a> Tokenizer<'a> {
             self.i += 1;
         }
         let mut delimiter = Vec::new();
-        while let Some(c) = self.peek(0).filter(|&c| !ends_word(c)) {
+        while !self.word_end(0) {
+            let Some(c) = self.peek(0) else { break };
             out.push(c);
             self.bump();
             match c {
@@ -813,18 +828,13 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn copy_paren(&mut self, out: &mut Vec<u8>) -> Result<(), LexError> {
-        self.copy_paren_tracked(out, &mut None)
-    }
-
-    fn copy_paren_tracked(
-        &mut self,
-        out: &mut Vec<u8>,
-        inner_close: &mut Option<usize>,
-    ) -> Result<(), LexError> {
         let start = self.line;
+        let mut opens = vec![self.i];
         out.push(b'(');
         self.i += 1;
         let mut depth = 1u32;
+        let mut prev_open = true;
+        let mut arith: Vec<u32> = Vec::new();
         let mut word_start = true;
         let mut cmd_pos = true;
         let mut cases = 0u32;
@@ -837,12 +847,16 @@ impl<'a> Tokenizer<'a> {
             };
             let at_word_start = word_start;
             let at_cmd_pos = cmd_pos;
+            let after_open = prev_open;
+            prev_open = false;
             word_start = false;
-            if !ends_word(c) {
+            let at_end = self.word_end(0);
+            if !at_end {
                 cmd_pos = false;
             }
+            let in_arith = arith.last().is_some_and(|&d| depth >= d);
             match c {
-                b'<' if self.starts_with(b"<<") && !self.starts_with(b"<<<") => {
+                b'<' if !in_arith && self.starts_with(b"<<") && !self.starts_with(b"<<<") => {
                     heredocs.extend(self.copy_heredoc_operator(out));
                 }
                 b'\\' => {
@@ -873,23 +887,32 @@ impl<'a> Tokenizer<'a> {
                     }
                 }
                 b'(' => {
+                    if !pattern {
+                        opens.push(self.i);
+                        depth += 1;
+                        if after_open {
+                            arith.push(depth);
+                        }
+                        prev_open = true;
+                    }
                     out.push(c);
                     self.i += 1;
-                    if !pattern {
-                        depth += 1;
-                    }
                     word_start = true;
                     cmd_pos = true;
                 }
                 b')' => {
+                    let at = self.i;
                     out.push(c);
                     self.i += 1;
                     if pattern {
                         pattern = false;
                     } else {
+                        if let Some(open) = opens.pop() {
+                            self.closes.insert(open, at);
+                        }
                         depth -= 1;
-                        if depth == 1 && inner_close.is_none() {
-                            *inner_close = Some(out.len());
+                        while arith.last().is_some_and(|&d| d > depth) {
+                            arith.pop();
                         }
                         if depth == 0 {
                             return Ok(());
@@ -914,7 +937,7 @@ impl<'a> Tokenizer<'a> {
                     word_start = true;
                     cmd_pos = true;
                 }
-                _ if ends_word(c) => {
+                _ if at_end => {
                     out.push(c);
                     self.bump();
                     word_start = true;
@@ -935,13 +958,14 @@ impl<'a> Tokenizer<'a> {
                     }
                     let bare = &self.b[begin..self.i];
                     out.extend_from_slice(bare);
-                    if self.peek(0).is_none_or(ends_word) {
+                    if self.word_end(0) {
                         match bare {
                             b"case" if at_cmd_pos && !pattern => case_pending = true,
                             b"in" if case_pending => {
                                 case_pending = false;
                                 cases += 1;
                                 pattern = true;
+                                cmd_pos = true;
                             }
                             b"esac" if at_cmd_pos && cases > 0 => {
                                 cases -= 1;
@@ -1537,8 +1561,11 @@ mod tests {
         assert_eq!(args[1], b"a\nb\tc\\d'eA\x7f\x081\n");
         assert_eq!(args[2], b"\\q");
         assert_eq!(args[3], b"t");
-        let more = lex_str(r#"printf $'\r\"\a\b\e\f\v\xA\0'"#);
-        assert_eq!(more[0].argv[1].as_bytes(), b"\r\"\x07\x08\x1b\x0c\x0b\n\0");
+        let more = lex_str(r#"printf $'\r\"\a\b\e\E\?\f\v\xA\0'"#);
+        assert_eq!(
+            more[0].argv[1].as_bytes(),
+            b"\r\"\x07\x08\x1b\x1b?\x0c\x0b\n\0"
+        );
         let raw = lex_str(r"echo $'\xff'");
         assert_eq!(raw[0].argv[1].as_bytes(), b"\xff");
         assert!(!raw[0].argv[1].is_utf8());
@@ -1918,5 +1945,71 @@ exit 0
                 vec!["useradd", "-u", "0", "x"]
             ]
         );
+    }
+
+    #[test]
+    fn shift_inside_arithmetic_is_not_a_heredoc() {
+        assert_eq!(
+            all_argv("x=$(\n  (( m = 1 << 4 ))\n  echo $m\n)\nid"),
+            [vec![], vec!["id"]]
+        );
+        assert_eq!(all_argv("x=$((\n 1 << 2\n))\nid"), [vec![], vec!["id"]]);
+        assert_eq!(
+            all_argv("mask=$( (( v = 1 << 3 )); echo $v\n)\nid"),
+            [vec![], vec!["id"]]
+        );
+    }
+
+    #[test]
+    fn crlf_inside_substitutions() {
+        assert_eq!(
+            all_argv("v=$(case $1 in\r\n a) echo A;;\r\n esac)\r\nid"),
+            [vec![], vec!["id"]]
+        );
+        let cmds = lex_str("x=$(cat <<EOF\r\nbody )\r\nEOF\r\n)\r\nid");
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(
+            cmds[0].assignments[0].value.as_str(),
+            Some("$(cat <<EOF\r\nbody )\r\nEOF\r\n)")
+        );
+        assert_eq!(argv(&cmds[1]), ["id"]);
+        assert_eq!(
+            all_argv("v=$(if x; then\r\n case $1 in a) y;; esac\r\nfi)\r\nid"),
+            [vec![], vec!["id"]]
+        );
+    }
+
+    #[test]
+    fn nested_double_parens_lex_in_linear_time() {
+        let n = 40_000;
+        let src = "((a) ".repeat(n) + &")".repeat(n);
+        assert!(src.len() >= 200_000);
+        let started = std::time::Instant::now();
+        let cmds = lex_str(&src);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(cmds.len(), n);
+        assert!(cmds.iter().all(|c| argv(c) == ["a"]));
+    }
+
+    #[test]
+    fn esac_right_after_in_or_an_arm_end_closes_the_case() {
+        assert_eq!(all_argv("x=$(case x in esac)\nid"), [vec![], vec!["id"]]);
+        let cmds = lex_str("v=$(case $1 in a) echo esac;; b) y;; esac)\nid");
+        assert_eq!(
+            cmds[0].assignments[0].value.as_str(),
+            Some("$(case $1 in a) echo esac;; b) y;; esac)")
+        );
+        assert_eq!(argv(&cmds[1]), ["id"]);
+    }
+
+    #[test]
+    fn heredoc_inside_backticks_may_hold_a_backtick() {
+        let cmds = lex_str("y=`cat <<EOF\na ` b\nEOF\n`\nnext");
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(
+            cmds[0].assignments[0].value.as_str(),
+            Some("`cat <<EOF\na ` b\nEOF\n`")
+        );
+        assert_eq!(argv(&cmds[1]), ["next"]);
     }
 }

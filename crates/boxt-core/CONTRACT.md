@@ -118,15 +118,19 @@ It does POSIX `sh` word and command splitting, plus the bash forms seen in maint
 scripts, and expands nothing.
 
 - Quotes are removed and `\` escapes applied. A line continuation is `\` + LF or `\` +
-  CR LF. A CR right before an LF is a blank; any other CR is an ordinary byte of its word.
+  CR LF. A CR right before an LF is a blank and ends a word on every path: top level,
+  substitutions, backticks, here-document delimiters and body lines. Any other CR is an
+  ordinary byte of its word.
 - `$(…)`, `$((…))`, `${…}` and backticks stay inside their word as written, at top level
   and inside double quotes. `${…}` keeps nested quotes. Inside `$(…)`, a `#` that starts a
   word comments to the end of the line, a nested `case` is tracked (`case` and `esac`
-  count only in command position, so `$(echo case in)` is plain words), and a
-  here-document's body is copied verbatim up to its delimiter, so none of them closes the
-  substitution early. Backticks copy here-document bodies the same way.
+  count only in command position, and `esac` also right after `in` or an arm end, so
+  `$(echo case in)` is plain words), and a here-document's body is copied verbatim up to
+  its delimiter, so none of them closes the substitution early. Inside `((…))` or
+  `$((…))` arithmetic, `<<` is a shift and starts no here-document. Backticks copy
+  here-document bodies the same way.
 - Process substitution `<(…)` and `>(…)` is one word, copied as written like `$(…)`.
-- `$'…'` decodes `\n \t \r \\ \' \" \a \b \e \f \v`, `\xHH` (one or two hex digits)
+- `$'…'` decodes `\n \t \r \\ \' \" \? \a \b \e \E \f \v`, `\xHH` (one or two hex digits)
   and `\NNN` (one to three octal digits, so `\0` and `\012` work as in bash); any other
   escape stays as written. `$"…"` is a double-quoted string.
 - `;`, `;;`, `;&`, `;;&`, `&&`, `||`, `|`, `|&`, `&`, `(`, `)` and newlines end a command.
@@ -242,11 +246,19 @@ scripts, and expands nothing.
   `resume_after`, and everything under it.
 - When a worker opens an entry, before it reads any byte of it, it sends
   `WorkerMsg::opened(entry)`, which is `Facts{entry, facts: []}`, so `last_seen` names an
-  entry that faults before sending anything. A container entry `[k]` is opened as `[k]`
-  before its `[k, 0]`. With that, the faulting entry is always the one being read: a
-  worker that dies on opening `[3]` after committing `[2, 1]` faults `[3]`, and the resume
-  with `resume_after = [3]` reads `[4]` on. The empty frame is charged like any `Facts`
-  frame and commits nothing.
+  entry that faults before sending anything. A container worker sends
+  `opened([.., next])` before it parses the next entry header, so a fault while moving to
+  the next child lands on that index: committed `[2, 1]` then `opened([2, 2])` faults
+  `[2, 2]`, and the resume with `resume_after = [2, 2]` sends `[3]` on. A worker that dies
+  on opening `[3]` faults `[3]`, and the resume reads `[4]` on.
+- A container entry `[k]` is opened as `[k]` before its `[k, 0]`. That `opened([k])`
+  needs no `EntryDone` of its own: the container's outcome travels on `[k, 0]`.
+- When the container has no more entries, the header read that finds its end is still
+  attributed to the next index, the container's end. A fault there marks that index
+  `NotChecked`, and the retry skips straight past it to the container's next sibling.
+- So the faulting entry is the one being opened or read, or the index after a container's
+  last child when the fault comes at its end. The empty frame is charged like any
+  `Facts` frame and commits nothing.
 - A second fault in the same job makes the rest of it one
   `Aggregate{RepeatedFault, count: None}`.
 - A file ended by the OS memory cap or the watchdog is retried once in a fresh worker. Its

@@ -554,6 +554,32 @@ fn a_fault_on_opening_a_sibling_blames_that_sibling() {
 }
 
 #[test]
+fn a_fault_moving_to_the_next_child_blames_that_child() {
+    let committed = paths(&[&[0], &[1], &[2, 0], &[2, 1]]);
+    let opened = WorkerMsg::opened(EntryPath::from([2, 2]));
+    let faulted = faulting_entry(&committed, opened.entry());
+    assert_eq!(faulted, EntryPath::from([2, 2]));
+    let second_pass = paths(&[
+        &[0],
+        &[1],
+        &[2, 0],
+        &[2, 1],
+        &[2, 2],
+        &[2, 2, 0],
+        &[3],
+        &[4, 0],
+    ]);
+    let resent: Vec<&EntryPath> = second_pass
+        .iter()
+        .filter(|e| !resume_skips(e, &faulted))
+        .collect();
+    assert_eq!(
+        resent,
+        vec![&EntryPath::from([3]), &EntryPath::from([4, 0])]
+    );
+}
+
+#[test]
 fn entry_paths_sort_lexicographically() {
     let mut v = paths(&[&[2, 1], &[10], &[2], &[0], &[2, 0, 5], &[], &[1]]);
     v.sort();
