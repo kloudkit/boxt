@@ -102,6 +102,9 @@ pub fn is_shell_interpreter(interpreter: Option<&Text>) -> bool {
     let line = interpreter.map_or(&b""[..], Text::as_bytes);
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     let blank = |c: &u8| *c == b' ' || *c == b'\t';
+    let start = line.iter().position(|c| !blank(c)).unwrap_or(line.len());
+    let line = &line[start..];
+    let line = line.strip_prefix(b"#!").unwrap_or(line);
     let words: Vec<&[u8]> = line.split(blank).filter(|w| !w.is_empty()).collect();
     let base = |w: &[u8]| w.rsplit(|&c| c == b'/').next().unwrap_or(w).to_vec();
     let Some(first) = words.first() else {

@@ -16,9 +16,56 @@ impl SchemaVersion {
     }
 
     pub const fn accepts(self, found: SchemaVersion) -> bool {
-        self.major == found.major
+        found.major == self.major && found.minor <= self.minor
+    }
+
+    pub fn check(self, found: SchemaVersion) -> Result<(), UnsupportedVersion> {
+        let reason = if found.major != self.major {
+            UnsupportedReason::OtherMajor
+        } else if found.minor > self.minor {
+            UnsupportedReason::NewerMinor
+        } else {
+            return Ok(());
+        };
+        Err(UnsupportedVersion {
+            supported: self,
+            found,
+            reason,
+        })
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedReason {
+    OtherMajor,
+    NewerMinor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedVersion {
+    pub supported: SchemaVersion,
+    pub found: SchemaVersion,
+    pub reason: UnsupportedReason,
+}
+
+impl fmt::Display for UnsupportedVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.reason {
+            UnsupportedReason::OtherMajor => write!(
+                f,
+                "version {} is not supported; this build reads {}.x up to {}",
+                self.found, self.supported.major, self.supported
+            ),
+            UnsupportedReason::NewerMinor => write!(
+                f,
+                "version {} is newer than {}, the newest this build reads",
+                self.found, self.supported
+            ),
+        }
+    }
+}
+
+impl std::error::Error for UnsupportedVersion {}
 
 impl fmt::Display for SchemaVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -114,13 +161,31 @@ mod tests {
     }
 
     #[test]
-    fn a_loader_accepts_any_minor_of_its_own_major() {
+    fn a_loader_accepts_its_own_major_up_to_its_own_minor() {
         let loader = SchemaVersion::new(1, 2);
         assert!(loader.accepts(SchemaVersion::new(1, 0)));
         assert!(loader.accepts(SchemaVersion::new(1, 2)));
-        assert!(loader.accepts(SchemaVersion::new(1, 9)));
+        assert!(!loader.accepts(SchemaVersion::new(1, 3)));
         assert!(!loader.accepts(SchemaVersion::new(0, 2)));
         assert!(!loader.accepts(SchemaVersion::new(2, 0)));
+        assert_eq!(loader.check(SchemaVersion::new(1, 1)), Ok(()));
+        let newer = loader.check(SchemaVersion::new(1, 9)).unwrap_err();
+        assert_eq!(
+            newer,
+            UnsupportedVersion {
+                supported: loader,
+                found: SchemaVersion::new(1, 9),
+                reason: UnsupportedReason::NewerMinor,
+            }
+        );
+        assert_eq!(
+            newer.to_string(),
+            "version 1.9 is newer than 1.2, the newest this build reads"
+        );
+        assert_eq!(
+            loader.check(SchemaVersion::new(2, 0)).unwrap_err().reason,
+            UnsupportedReason::OtherMajor
+        );
         assert!(SchemaVersion::new(1, 9) < SchemaVersion::new(2, 0));
         assert!(SchemaVersion::new(1, 2) < SchemaVersion::new(1, 10));
     }

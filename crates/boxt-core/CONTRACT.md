@@ -143,11 +143,11 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
 
 | Kind | From | Scope | Path | Line | Value forms |
 | --- | --- | --- | --- | --- | --- |
-| `call` | source | `Function{qualified_name, signature}` inside a function, else `File` | file | the call's first line | `callee` as written, qualification included; `args` each argument's text as written |
+| `call` | source | `Function{qualified_name, signature}` inside a function, else `File` | file | the call's first line | `callee` as written, qualification included; `args` each argument's text as written, line ends as LF |
 | `include` | source | as `call` | file | the directive's line | `target` without its delimiters; `system` is true for `<…>` |
 | `string_literal` | source | as `call` | file | the literal's first line | the literal's bytes with C escapes decoded, prefix and quotes dropped; adjacent literals stay separate facts |
-| `string_literal` | binary | `File` | file | none | the bytes as found, without the terminating NUL |
-| `config_key` | config | `ConfigKey(key)` | file | the key's line | `key` is the full key, nested names joined with `.` (INI: `section.key`); `value` is the scalar as written after unquoting, `None` for a non-scalar |
+| `string_literal` | binary | `File` | file | none | each NUL-terminated run of at least 4 printable bytes (ASCII 0x20 to 0x7E) from the `.rodata` and `.data` sections only, without the NUL |
+| `config_key` | config | `ConfigKey(key)` | file | the key's line | `key` is the key's path, its segments joined with `.` (INI: `section.key`); a segment holding `.` or `[` is written `["…"]` with JSON string escaping, an array element is `[n]` (0-based), and an XML attribute is `@name`; `value` is the scalar as written after unquoting, `None` for a non-scalar |
 | `guard_region` | source | as `call`, at the branch's directive | file | the branch's directive line | `end_line` is the line of the directive that ends the branch |
 | `import`, `export` | binary | `Symbol(symbol)` | file | none | `symbol` as in the dynamic symbol table, not demangled; `version` the symbol version name (`GLIBC_2.34`), `None` when unversioned |
 | `needed_library` | binary | `File` | file | none | `name` as in `DT_NEEDED` |
@@ -163,6 +163,22 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   fact.
 - `config_key` comes only from config files. A key-like string in C/C++ source is a
   `string_literal`.
+- `Scope::Function`: `qualified_name` is the function's name as written, namespaces and
+  classes included, with the whitespace around `::` removed; `signature` is the parameter
+  types only, comments and parameter names dropped, each run of whitespace (line ends
+  included) collapsed to one space and none kept at either end. So the same function has
+  the same scope whatever its layout.
+- CR LF: every text reader treats CR LF as one line end, as LF is. No fact value, `args`
+  item or scope text holds the CR of a CR LF, so a checkout with CRLF line ends gives the
+  same facts and finding ids as one with LF (AD-7, FR-36). `Fact::validate` refuses a CR
+  anywhere in scope text and in the key, section and value of a `service_setting` or
+  `config_key` as `FactError::CarriageReturn`.
+- C/C++ identification: the router identifies a C/C++ file by a listed extension, plus a
+  content check that works on bytes in any encoding (or runs after the core decode
+  function), so a UTF-16 or code-page file still counts. A file with a listed extension that
+  then fails decoding is `file_kind: Source`, `NotChecked` with the FR-10 reason that
+  `boxt-read-cpp` returns (`EncodingUndeclared` or `InvalidForDeclaredEncoding`), and stays
+  in SM-3; it is never `NoReader`.
 
 ### Guards (AD-18, S-F7)
 
@@ -206,66 +222,34 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
 ## Shell lexer (RA2-H5)
 
 `shell::lex` is the only shell lexer. Everything that meets a script uses it: the router for
-the install-script entries of an RPM or DEB frame, and the service reader for SysV init
-scripts. Each command becomes one `Fact::ShellCommand`, with the command's line in the
-`Location`. `is_shell_interpreter` decides whether a script is shell. It drops one trailing
-CR (a CRLF shebang). No interpreter, or a blank one, is the format's default shell. Otherwise
-the program is the first word, or for `env` the first word after its options and `NAME=value`
-words: `-u`/`--unset` and `-C`/`--chdir` take the next word as their argument, and
-`-S`/`--split-string` (or `-S<word>`) splits its argument into the words that follow. The
-script is shell when the program's file name is in `SHELL_INTERPRETERS` (`sh bash dash ash
-ksh mksh`). A script with any other
-interpreter is never lexed: it is `NotChecked` with `UnsupportedInterpreter` and
-`Details::Interpreter`.
+the install-script entries of an RPM or DEB frame (it lexes them itself, with no reader),
+and the service reader for SysV init scripts. Each command becomes one `Fact::ShellCommand`,
+with the command's line in the `Location`. It splits words and commands as POSIX `sh` plus
+the bash forms seen in maintainer scripts, and expands nothing. The grammar it covers is
+fixed by the tests in `src/shell.rs` and `tests/matrix.rs`; the rules other crates rely on
+are:
 
-It does POSIX `sh` word and command splitting, plus the bash forms seen in maintainer
-scripts, and expands nothing.
-
-- Quotes are removed and `\` escapes applied. A line continuation is `\` + LF or `\` +
-  CR LF. A CR right before an LF is a blank and ends a word on every path: top level,
-  substitutions, backticks, here-document delimiters and body lines. Any other CR is an
-  ordinary byte of its word.
-- `$(…)`, `$((…))`, `${…}` and backticks stay inside their word as written, at top level
-  and inside double quotes. `${…}` keeps nested quotes. Inside `$(…)`, a `#` that starts a
-  word comments to the end of the line, a nested `case` is tracked (`case` and `esac`
-  count only in command position, and `esac` also right after `in` or an arm end, so
-  `$(echo case in)` is plain words), and a here-document's body is copied verbatim up to
-  its delimiter, so none of them closes the substitution early. Inside `((…))` or
-  `$((…))` arithmetic, `<<` is a shift and starts no here-document. Backticks copy
-  here-document bodies the same way.
-- Process substitution `<(…)` and `>(…)` is one word, copied as written like `$(…)`.
-- `$'…'` decodes `\n \t \r \\ \' \" \? \a \b \e \E \f \v`, `\xHH` (one or two hex digits)
-  and `\NNN` (one to three octal digits, so `\0` and `\012` work as in bash); any other
-  escape stays as written. `$"…"` is a double-quoted string.
-- `;`, `;;`, `;&`, `;;&`, `&&`, `||`, `|`, `|&`, `&`, `(`, `)` and newlines end a command.
-  `#` at the start of a word starts a comment.
-- Unquoted reserved words at the start of a command (`if then else elif fi do done while
-  until ! { }`) are dropped.
-- `case WORD in`: each arm's pattern list, up to its `)`, is skipped; arm bodies end at
-  `;;`, `;&` or `;;&`; `esac` closes the block. `case` nests.
-- `for NAME in WORDS; do`, `for NAME do`, `for ((…))` and `select`: the header is not a
-  command. An arithmetic command `((…))` is not a command. A `((` whose inner `(` is not
-  closed by the `)` just before the final `)` is two nested subshells, lexed as commands.
-- A function definition (`name()`, `name ()`, `function name`, `function name()`) is not a
-  command; its body is lexed.
-- `[[ … ]]` is one command whose `argv` holds every word and operator up to `]]`. A
-  newline right after `&&` or `||` inside it continues the test; any other newline ends it.
-- Leading unquoted `NAME=value` and `NAME+=value` words go to `assignments`, with
-  `append` set for `+=`. An array value `NAME=(…)` is copied as written into `value`, so
-  its words are never commands. The first other word starts
-  `argv`, and later `NAME=value` words are arguments. `argv` is empty only when
-  `assignments` or `redirections` is not, and a command with none of the three is not
-  emitted.
-- Redirections, with any leading fd, go to `redirections`: `> >> >| < <> >& <& &> &>> <<
-  <<- <<<`. Here-document bodies are skipped; `<<-` strips leading tabs before matching the
-  delimiter. `<<<` is a here-string and starts no body.
-- An unterminated quote, here-document or substitution, or a redirection operator with no
-  target word, is `LexError{line, kind: UnterminatedQuote | UnterminatedHeredoc |
-  UnterminatedSubstitution | MissingRedirectTarget}`, with the line where it began. The
-  reader maps it to `NotChecked{Unparseable}` for that script and emits none of its
-  commands.
-- `shell::ShellCommand` carries `line`, `assignments`, `argv` and `redirections`.
-  `Fact::ShellCommand` carries `assignments`, `argv` and `redirections`.
+- CR LF is a line end everywhere, so no word or line number differs between a CRLF and an
+  LF checkout. A line continuation is `\` + LF or `\` + CR LF.
+- Leading `NAME=value` and `NAME+=value` words are `assignments`; the first other word
+  starts `argv`; redirections, with any leading fd, are `redirections`. A command with none
+  of the three is not emitted. `shell::ShellCommand` also carries the command's `line`.
+- A `LexError{line, kind}` (an unterminated quote, here-document or substitution, or a
+  redirection with no target) makes the script `NotChecked{Unparseable}`, and none of its
+  commands are emitted.
+- `is_shell_interpreter` decides whether a script is shell. It drops one trailing CR, then
+  leading blanks and a leading `#!` and the blanks after it. No interpreter, or a blank one,
+  is the format's default shell. Otherwise the program is the first word, or for `env` the
+  first word after its options and `NAME=value` words: `-u`/`--unset` and `-C`/`--chdir`
+  take the next word as their argument, and `-S`/`--split-string` (or `-S<word>`) splits its
+  argument into the words that follow. The script is shell when the program's file name is
+  in `SHELL_INTERPRETERS` (`sh bash dash ash ksh mksh`). A script with any other interpreter
+  is never lexed: it is `NotChecked` with `UnsupportedInterpreter` and
+  `Details::Interpreter`.
+- The `interpreter` a package reader reports: for DEB, the script's shebang line after `#!`
+  with leading blanks dropped and a trailing CR dropped, or `None` when the script has no
+  shebang; for RPM, the scriptlet's `*PROG` tag as written, or `None` when the tag is
+  absent or is `/bin/sh` (the default).
 
 ## Reader boundary (AD-14, S-F1)
 
@@ -293,10 +277,16 @@ scripts, and expands nothing.
   `Link` `NotChecked{Symlink(Unresolved)}` and a `Special` entry `NotChecked{SpecialFile}`;
   neither is followed or read.
 - `ReadCtx` holds the base `Location` of the file being read (input, frames, path; line
-  `None`, scope `File`, or the script's scope), the `WorkerSettings`, and one `WorkBudget`.
-  Readers build each fact's location with `ctx.at(line, scope)`. The budget is private: a
-  reader can only spend it, through `work`, `buffer`, `release`, `file_size`, `entry` and
-  `decompression`, and read it through `budget()`. Only the router builds a context with a
+  `None`, scope `File`, or the script's scope), the file's declared `encoding`, and one
+  `WorkBudget`. Readers build each fact's location with `ctx.at(line, scope)`. Readers never
+  see an encoding pattern: the router resolves the declaration with
+  `WorkerSettings::resolve_encoding`, the first declaration whose pattern matches the file's
+  path in its innermost root, and passes only the result (`None` when nothing matches). It
+  matches as the collector does: byte-exact, with no case folding, except AD-15's Windows
+  fallback for paths on disk, which encoding declarations follow too; never inside a
+  container. The budget is private: a reader can only spend it, through `work`, `buffer`,
+  `release`, `file_size`, `entry`, `decompression` and `inflate`, and read it through
+  `budget()`. Only the router builds a context with a
   given budget (`with_budget`) and takes it back (`into_budget`).
 - `WorkBudget` counts against `Limits`: `work` steps (`Work`; tree-sitter steps through its
   progress callback), `buffer` and `release` for bytes held in memory (`Memory`, the counted
@@ -308,13 +298,26 @@ scripts, and expands nothing.
 - The decompression ratio is decompressed bytes over compressed bytes, per compressed
   stream (a gzip, xz, bzip2 or zstd stream, a zip entry's deflate data). The reader takes
   one `Decompression` per stream from `decompression()`, reports input with `consumed` and
-  output with `produced`. Once at least `RATIO_FLOOR` (1 MiB) was produced, every `produced`
-  call checks `produced > consumed × DecompressionRatio` and fails with the ratio rounded
-  down, so small streams never trip it and a bomb stops while it is being produced.
-- `entry()` counts each entry of a job against `TotalEntries`: a job is capped at the whole
+  each block of output with `inflate(stream, bytes)`. `inflate` first charges the bytes to
+  the job's decompressed total, refused past `TotalDecompressedBytes`; then, once at least
+  `RATIO_FLOOR` (1 MiB) of that stream was produced, it checks
+  `produced > consumed × DecompressionRatio` and fails with the ratio rounded down, so small
+  streams never trip it and a bomb stops while it is being produced.
+- `entry()` counts each entry of a job against `TotalEntries`, and `inflate` counts the
+  job's decompressed bytes against `TotalDecompressedBytes`: each job is capped at the whole
   run-wide limit inside its worker (AD-4); the run-wide cut itself stays the collector's.
-  `nested()` carries the job's count down, and the router hands it back up with
-  `absorb_entries(&child)` when a nested container ends.
+  `nested()` carries both counts down, and the router hands them back up with
+  `absorb(&child)` when a nested container ends.
+- Who charges what, so nothing is charged twice:
+
+  | Charge | Charged by |
+  | --- | --- |
+  | `entry()` | the router, once per entry a container yields, before routing it |
+  | `file_size` | the router, on a leaf file and on each entry before it reads it; never on a container's own stream, which is bounded by its entries |
+  | `buffer`, `release` | the router for every buffer it fills and hands a reader (a whole leaf file, a buffered nested zip); a reader for its own allocations only |
+  | `work` | the reader, for its own steps |
+  | `decompression`, `inflate` | the reader that decompresses, for its own streams |
+
 - `FactSink` takes facts, regions and notes. The router's sink charges the entry's
   `EntryBudget`; when it refuses, the reader stops and returns the `Exceeded` it got. A
   reader that stops for any reason returns `NotRead`, and the router discards what the
@@ -345,10 +348,12 @@ scripts, and expands nothing.
 
 ### Jobs
 
-- A `Job` names its input and its file. A `Route` job's file is `JobFile::InInput`, the
-  path relative to the input root: when the input is itself a file, the worker opens
-  `input.given`; otherwise it opens `input.given` joined with the path. The worker tells the
-  two apart by opening `given` no-follow and checking its type. A `CompileDatabase` job's
+- A `Job` names its input and its file. The collector, which walked the input, says which
+  case it is, so the worker never guesses: `JobFile::WholeInput(name)` when the input is
+  itself a file (the worker opens `input.given`; `name` is its file name, the job's path),
+  and `JobFile::InInput(path)` for a file in a tree (the worker opens `input.given` joined
+  with `path`). An input root the user gave is followed once, when it is a link, by both
+  the walk and the worker; nothing below it is ever followed (AD-3). A `CompileDatabase` job's
   file is `JobFile::Setting`, the path as the bin resolved it from the setting, which may
   lie outside every input. `Job::is_well_formed` checks the pairing, and that only a
   `Route` job resumes.
@@ -373,9 +378,12 @@ scripts, and expands nothing.
   `[k, 0]`.
 - A worker sends entries in lexicographic `EntryPath` order. Every `Facts`, `Regions` and
   `Notes` message for an entry comes after its `Opened` and before its `EntryDone`.
-- `EntryDone{entry, outcome, bytes}` commits the entry. `bytes` is the decompressed bytes of
-  the entry's own content, not counting its children; the collector sums them in canonical
-  order for `TotalDecompressedBytes`.
+- `EntryDone{entry, outcome, bytes}` commits the entry. `bytes` is the bytes the worker
+  actually inflated for the entry's own content, not counting its children, whatever the
+  outcome: an entry refused part-way reports what was inflated before the refusal, and an
+  entry the worker decompressed only to skip it (a resume, or a directory or link inside a
+  compressed stream) has those bytes counted on the next entry it reports. The collector
+  sums them in canonical order for `TotalDecompressedBytes`.
 - An entry's facts, regions and notes count only once its `EntryDone` arrives, whatever its
   parent's state. When that `EntryDone`'s outcome is not `Read`, the collector discards what
   was sent for the entry.
@@ -383,7 +391,9 @@ scripts, and expands nothing.
   `JobDone{outcome: Some(..)}`, which commits them. A container job ends with
   `JobDone{outcome: None}`: its own outcome went on `EntryDone{[0]}`.
 - A not-checked outcome travels only on `EntryDone` or `JobDone`, never as a fact, region or
-  note.
+  note. This is a recorded deviation from the Story 1.1 AC, which names `EntryDone` alone:
+  entry `[]`, the file of a job that is not a container, has no `EntryDone`, and its outcome
+  rides on `JobDone{Some(..)}`.
 - A container stopped by a limit after some children (an entry count, or a job's share of a
   run-wide limit) sends `EntryDone{[.., n], Aggregate{…}}` at its next index `n`, never 0,
   and nothing more for that container. `ends_container` names the container such a message
@@ -442,7 +452,9 @@ scripts, and expands nothing.
   overflow all look alike), `Panic` (exit code 101, a panic that escaped the worker's own
   catch), `BadFrame` and `Exited` (any other exit before `JobDone`, 0 included).
 - The worker's allocation-failure path exits with `WORKER_MEMORY_CAP_EXIT`, a code reserved
-  for it. That exit is `ExitClass::WorkerMemoryCap`: the outcome is
+  for it. The worker installs that path both behind Rust's global allocator and, through
+  `ts_set_allocator`, for tree-sitter's C allocations, so an allocation failure in either
+  exits with that code rather than aborting as a `Crash`. That exit is `ExitClass::WorkerMemoryCap`: the outcome is
   `LimitExceeded(WorkerMemoryCap)`, marked `host_dependent`.
 - A file ended by the OS memory cap or the watchdog is retried once in a fresh worker. Its
   outcome, from the retry, is marked `host_dependent` whatever the retry gives. When the
@@ -465,6 +477,11 @@ scripts, and expands nothing.
   the collector sets it from the same routing decision it would make by name, and builds
   the location from the job (no frames, the job's path); a container that is not a package
   (tar, zip) has `None`.
+- An outcome the collector makes itself (a run-wide cut or `RunWatchdog` aggregate, a
+  `NotInCompileDatabase` aggregate, a walk-level symlink, special file or `OutOfScope`) takes
+  the key and location of the first file it covers in canonical order: its key is
+  `CanonicalKey::at(input index, that file's path, [])` and its location is that file's, as
+  the walk saw it.
 - `CollectedFile{key, location, outcome, regions, notes}` carries each committed outcome
   from the collector, through the bin, to verdict: `key` is `CanonicalKey::for_outcome`,
   `location` comes from the entry's `Opened` (for an aggregate at an index never opened,
@@ -508,8 +525,9 @@ scripts, and expands nothing.
   its serialized snake_case name.
 - The collector alone normalizes the units and matches them to walked paths.
   `SOURCE_EXTENSIONS` and `HEADER_EXTENSIONS` are the one extension table, matched ignoring
-  ASCII case. `classify` takes the relative path, or the file name, of a file the router
-  found to be C/C++. It takes the part after the last `/` only (a backslash is an ordinary
+  ASCII case. The collector applies `classify` by name to walked paths, before anything is
+  dispatched: it cannot know a file's content. `classify` takes the relative path or the
+  file name. It takes the part after the last `/` only (a backslash is an ordinary
   byte, as in `RelPath`): a listed source extension is `Source`; anything else, unlisted or
   extensionless included, is `Header`.
 
@@ -524,9 +542,11 @@ scripts, and expands nothing.
   first job (Job Object or `setrlimit`), a last resort whose hit is host-dependent.
   `Watchdog` is the per-file wall-clock last resort and `RunWatchdog` the run-wide one.
 - `WorkerMemoryCap` is at least `MEMORY_CAP_FACTOR` (4) times `Memory`, so a file within
-  its counted buffer cannot reach the OS cap through that buffer alone. `Limits::set` and
-  deserialization refuse anything else with `LimitError::CapBelowMemory`, and a refused
-  `set` leaves the limits unchanged; to raise both, raise the cap first.
+  its counted buffer cannot reach the OS cap through that buffer alone. Cross-limit rules
+  like this one are checked once, on the finished table, by `Limits::validate`, so the
+  order in which the bin merges flag, project file and default never changes the result.
+  `set` checks only the one value; the bin calls `validate` after merging, and
+  deserialization calls it too. A failure is `LimitError::CapBelowMemory`.
 - Every limit is at least 1. `Limits::set`, `Limits::with` and deserialization refuse 0
   with `LimitError::Zero`, and deserialization refuses unknown fields. `Limits` is read
   through `get`; its fields are private. `EntryMessageBytes` is at most `u32::MAX`, the
@@ -537,8 +557,10 @@ scripts, and expands nothing.
 - The rule-schema, profile-format, waiver-file, project-file and JSON-output versions are
   the `SchemaVersion{major, minor}` constants in `version`, printed, parsed and serialized
   as the string `"major.minor"` (`"1.0"`). An added field or kind bumps the minor; anything else bumps the major.
-  A loader at version `v` accepts a file at version `f` when `v.accepts(f)`, which holds
-  for any minor of the same major. Every loader checks against them and every report
+  A loader at version `v` accepts a file at version `f` when `v.accepts(f)`: the same major,
+  at any minor up to the loader's own (operator ruling). `v.check(f)` gives the typed
+  `UnsupportedVersion{supported, found, reason}` otherwise, naming both versions, with
+  reason `OtherMajor` or `NewerMinor`. Every loader checks against them and every report
   states them through `Versions::CURRENT`. Story 6.8 owns the published policy.
 
 ## Verdict types (AD-5, AD-16, AD-19, RA2-M6)

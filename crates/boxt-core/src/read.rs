@@ -5,7 +5,7 @@ use crate::limits::{LimitName, Limits};
 use crate::location::{FrameKind, Location, Scope, ScriptName};
 use crate::message::{Note, Region};
 use crate::outcome::{Details, FileOutcome, NotCheckedReason, SpecialKind};
-use crate::settings::WorkerSettings;
+use crate::settings::Encoding;
 use crate::text::Text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -59,10 +59,12 @@ pub struct WorkBudget {
     max_file_size: u64,
     max_ratio: u64,
     max_entries: u64,
+    max_decompressed: u64,
     work: u64,
     bytes: u64,
     depth: u64,
     entries: u64,
+    decompressed: u64,
 }
 
 pub const RATIO_FLOOR: u64 = 1024 * 1024;
@@ -79,7 +81,7 @@ impl Decompression {
         self.compressed = self.compressed.saturating_add(compressed);
     }
 
-    pub fn produced(&mut self, bytes: u64) -> Result<(), Exceeded> {
+    fn produced(&mut self, bytes: u64) -> Result<(), Exceeded> {
         self.produced = self.produced.saturating_add(bytes);
         if self.produced < RATIO_FLOOR {
             return Ok(());
@@ -120,11 +122,27 @@ impl WorkBudget {
             max_file_size: limits.get(LimitName::FileSize),
             max_ratio: limits.get(LimitName::DecompressionRatio),
             max_entries: limits.get(LimitName::TotalEntries),
+            max_decompressed: limits.get(LimitName::TotalDecompressedBytes),
             work: 0,
             bytes: 0,
             depth: 0,
             entries: 0,
+            decompressed: 0,
         }
+    }
+
+    pub fn inflate(&mut self, stream: &mut Decompression, bytes: u64) -> Result<(), Exceeded> {
+        charge(
+            LimitName::TotalDecompressedBytes,
+            &mut self.decompressed,
+            bytes,
+            self.max_decompressed,
+        )?;
+        stream.produced(bytes)
+    }
+
+    pub fn decompressed(&self) -> u64 {
+        self.decompressed
     }
 
     pub fn file_size(&self, size: u64) -> Result<(), Exceeded> {
@@ -155,8 +173,9 @@ impl WorkBudget {
         )
     }
 
-    pub fn absorb_entries(&mut self, child: &WorkBudget) {
+    pub fn absorb(&mut self, child: &WorkBudget) {
         self.entries = self.entries.max(child.entries);
+        self.decompressed = self.decompressed.max(child.decompressed);
     }
 
     pub fn entries(&self) -> u64 {
@@ -199,29 +218,25 @@ impl WorkBudget {
     }
 }
 
-pub struct ReadCtx<'a> {
+pub struct ReadCtx {
     pub location: Location,
-    pub settings: &'a WorkerSettings,
+    pub encoding: Option<Encoding>,
     budget: WorkBudget,
 }
 
-impl<'a> ReadCtx<'a> {
-    pub fn new(location: Location, settings: &'a WorkerSettings) -> Self {
+impl ReadCtx {
+    pub fn new(location: Location, limits: &Limits, encoding: Option<Encoding>) -> Self {
         ReadCtx {
             location,
-            settings,
-            budget: WorkBudget::new(&settings.limits),
+            encoding,
+            budget: WorkBudget::new(limits),
         }
     }
 
-    pub fn with_budget(
-        location: Location,
-        settings: &'a WorkerSettings,
-        budget: WorkBudget,
-    ) -> Self {
+    pub fn with_budget(location: Location, encoding: Option<Encoding>, budget: WorkBudget) -> Self {
         ReadCtx {
             location,
-            settings,
+            encoding,
             budget,
         }
     }
@@ -254,6 +269,10 @@ impl<'a> ReadCtx<'a> {
         self.budget.decompression()
     }
 
+    pub fn inflate(&mut self, stream: &mut Decompression, bytes: u64) -> Result<(), Exceeded> {
+        self.budget.inflate(stream, bytes)
+    }
+
     pub fn entry(&mut self) -> Result<(), Exceeded> {
         self.budget.entry()
     }
@@ -271,7 +290,7 @@ pub trait FactSink {
 
 pub trait Reader {
     fn file_kind(&self) -> FileKind;
-    fn read(&self, bytes: &[u8], ctx: &mut ReadCtx<'_>, sink: &mut dyn FactSink) -> ReadResult;
+    fn read(&self, bytes: &[u8], ctx: &mut ReadCtx, sink: &mut dyn FactSink) -> ReadResult;
 }
 
 pub trait ReadSeek: Read + Seek {}
@@ -318,15 +337,11 @@ pub struct Entry<'e> {
 
 pub trait ContainerReader {
     fn frame_kind(&self) -> FrameKind;
-    fn open<'a>(
-        &self,
-        input: Input<'a>,
-        ctx: &mut ReadCtx<'_>,
-    ) -> ReadResult<Box<dyn Container + 'a>>;
+    fn open<'a>(&self, input: Input<'a>, ctx: &mut ReadCtx) -> ReadResult<Box<dyn Container + 'a>>;
 }
 
 pub trait Container {
     fn name(&self) -> Option<Text>;
-    fn own_facts(&mut self, ctx: &mut ReadCtx<'_>, sink: &mut dyn FactSink) -> ReadResult;
-    fn next_entry(&mut self, ctx: &mut ReadCtx<'_>) -> ReadResult<Option<Entry<'_>>>;
+    fn own_facts(&mut self, ctx: &mut ReadCtx, sink: &mut dyn FactSink) -> ReadResult;
+    fn next_entry(&mut self, ctx: &mut ReadCtx) -> ReadResult<Option<Entry<'_>>>;
 }

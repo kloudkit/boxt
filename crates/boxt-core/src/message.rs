@@ -77,6 +77,7 @@ pub enum JobKind {
 #[serde(rename_all = "snake_case")]
 pub enum JobFile {
     InInput(RelPath),
+    WholeInput(RelPath),
     Setting(Text),
 }
 
@@ -91,7 +92,7 @@ pub struct Job {
 impl Job {
     pub fn path(&self) -> Option<&RelPath> {
         match &self.file {
-            JobFile::InInput(path) => Some(path),
+            JobFile::InInput(path) | JobFile::WholeInput(path) => Some(path),
             JobFile::Setting(_) => None,
         }
     }
@@ -99,7 +100,8 @@ impl Job {
     pub fn is_well_formed(&self) -> bool {
         matches!(
             (self.kind, &self.file),
-            (JobKind::Route, JobFile::InInput(_)) | (JobKind::CompileDatabase, JobFile::Setting(_))
+            (JobKind::Route, JobFile::InInput(_) | JobFile::WholeInput(_))
+                | (JobKind::CompileDatabase, JobFile::Setting(_))
         ) && (self.kind == JobKind::Route || self.resume_after.is_none())
     }
 }
@@ -249,6 +251,15 @@ pub struct CanonicalKey {
 }
 
 impl CanonicalKey {
+    pub fn at(input_index: u32, job_path: RelPath, entry: EntryPath) -> Self {
+        CanonicalKey {
+            input_index,
+            job_path,
+            entry,
+            location: None,
+        }
+    }
+
     pub fn for_fact(job: &Job, entry: &EntryPath, fact: &Fact) -> Option<Self> {
         Some(CanonicalKey {
             input_index: job.input.index,

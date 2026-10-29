@@ -41,7 +41,7 @@ impl Reader for LineReader {
         FileKind::Binary
     }
 
-    fn read(&self, bytes: &[u8], ctx: &mut ReadCtx<'_>, sink: &mut dyn FactSink) -> ReadResult {
+    fn read(&self, bytes: &[u8], ctx: &mut ReadCtx, sink: &mut dyn FactSink) -> ReadResult {
         for line in bytes.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
             ctx.work(1)?;
             sink.fact(Fact::StringLiteral {
@@ -70,7 +70,7 @@ impl ContainerReader for PackedReader {
     fn open<'a>(
         &self,
         mut input: Input<'a>,
-        ctx: &mut ReadCtx<'_>,
+        ctx: &mut ReadCtx,
     ) -> ReadResult<Box<dyn Container + 'a>> {
         let mut magic = [0u8; 4];
         input
@@ -97,11 +97,11 @@ impl Container for Packed<'_> {
         None
     }
 
-    fn own_facts(&mut self, _: &mut ReadCtx<'_>, _: &mut dyn FactSink) -> ReadResult {
+    fn own_facts(&mut self, _: &mut ReadCtx, _: &mut dyn FactSink) -> ReadResult {
         Ok(())
     }
 
-    fn next_entry(&mut self, ctx: &mut ReadCtx<'_>) -> ReadResult<Option<Entry<'_>>> {
+    fn next_entry(&mut self, ctx: &mut ReadCtx) -> ReadResult<Option<Entry<'_>>> {
         let mut header = [0u8; 2];
         if self.data.read_exact(&mut header).is_err() {
             return Ok(None);
@@ -193,7 +193,11 @@ fn route(
     reader: &dyn Reader,
     settings: &WorkerSettings,
 ) -> Result<Routed, NotRead> {
-    let mut ctx = ReadCtx::new(Location::file(input(), vec![], file.clone()), settings);
+    let mut ctx = ReadCtx::new(
+        Location::file(input(), vec![], file.clone()),
+        &settings.limits,
+        None,
+    );
     let mut stream = bytes;
     let mut container = containers.open(Input::Stream(&mut stream), &mut ctx)?;
     let name = container
@@ -206,7 +210,7 @@ fn route(
     }];
     let mut base = ReadCtx::with_budget(
         Location::frame(input(), frames.clone()),
-        settings,
+        None,
         ctx.budget().nested()?,
     );
     let mut out = Vec::new();
@@ -235,7 +239,8 @@ fn route(
         entry.data.reader().read_to_end(&mut body).unwrap();
         let mut entry_ctx = ReadCtx::new(
             Location::file(input(), frames.clone(), path.clone()),
-            settings,
+            &settings.limits,
+            settings.resolve_encoding(|p| path.as_bytes().starts_with(p.pattern.as_bytes())),
         );
         let mut sink = Collected::new(&settings.limits);
         let result = reader
@@ -563,6 +568,11 @@ fn f3_install_scripts_are_entries_of_their_package_frame() {
         (Some("/usr/bin/env -S"), false),
         (Some("/usr/bin/env LC_ALL=C perl"), false),
         (Some("/usr/bin/env -u bash perl"), false),
+        (Some("#!/bin/sh"), true),
+        (Some("#! /bin/sh"), true),
+        (Some("  #!\t/bin/bash -e\r"), true),
+        (Some("#!/usr/bin/perl"), false),
+        (Some("#!"), true),
     ] {
         let interpreter = interpreter.map(Text::from);
         assert_eq!(
@@ -771,28 +781,30 @@ fn f6_the_worker_cap_is_its_own_limit_and_at_least_four_times_memory() {
     assert!(cap >= MEMORY_CAP_FACTOR * memory);
 
     let mut limits = defaults.clone();
+    let big = cap / MEMORY_CAP_FACTOR + 1;
+    assert_eq!(limits.set(LimitName::Memory, big), Ok(()));
     assert_eq!(
-        limits.set(LimitName::Memory, cap / MEMORY_CAP_FACTOR + 1),
-        Err(LimitError::CapBelowMemory {
-            cap,
-            memory: cap / MEMORY_CAP_FACTOR + 1
-        })
+        limits.validate(),
+        Err(LimitError::CapBelowMemory { cap, memory: big })
     );
-    assert_eq!(limits, defaults);
     assert_eq!(
-        limits.set(LimitName::Memory, cap / MEMORY_CAP_FACTOR),
+        limits.set(LimitName::WorkerMemoryCap, big * MEMORY_CAP_FACTOR),
         Ok(())
     );
-    assert!(limits.set(LimitName::WorkerMemoryCap, cap - 1).is_err());
-    assert_eq!(limits.get(LimitName::WorkerMemoryCap), cap);
-    assert_eq!(limits.set(LimitName::WorkerMemoryCap, 4 * cap), Ok(()));
-    assert_eq!(limits.set(LimitName::Memory, cap), Ok(()));
-    assert_eq!(
-        limits.set(LimitName::Memory, u64::MAX),
-        Err(LimitError::CapBelowMemory {
-            cap: 4 * cap,
-            memory: u64::MAX
-        })
+    assert_eq!(limits.validate(), Ok(()));
+
+    let mut cap_first = defaults.clone();
+    cap_first
+        .set(LimitName::WorkerMemoryCap, big * MEMORY_CAP_FACTOR)
+        .unwrap();
+    cap_first.set(LimitName::Memory, big).unwrap();
+    assert_eq!(cap_first, limits);
+    assert_eq!(defaults.validate(), Ok(()));
+    assert!(
+        serde_json::from_value::<Limits>(
+            serde_json::to_value(defaults.clone().with(LimitName::Memory, big).unwrap()).unwrap()
+        )
+        .is_err()
     );
 
     let mut json = serde_json::to_value(&defaults).unwrap();
@@ -1283,7 +1295,8 @@ fn schema_versions_are_major_dot_minor() {
     for (_, version) in json.as_object().unwrap() {
         assert_eq!(version, &serde_json::json!("1.0"));
     }
-    assert!(RULE_SCHEMA_VERSION.accepts("1.4".parse().unwrap()));
+    assert!(RULE_SCHEMA_VERSION.accepts("1.0".parse().unwrap()));
+    assert!(!RULE_SCHEMA_VERSION.accepts("1.4".parse().unwrap()));
     assert!(!RULE_SCHEMA_VERSION.accepts("2.0".parse().unwrap()));
 }
 
@@ -1561,6 +1574,8 @@ fn budgets_count_file_size_ratio_and_entries_per_job() {
         .with(LimitName::DecompressionRatio, 10)
         .unwrap()
         .with(LimitName::TotalEntries, 3)
+        .unwrap()
+        .with(LimitName::TotalDecompressedBytes, 40 * RATIO_FLOOR)
         .unwrap();
     let mut budget = WorkBudget::new(&limits);
     assert_eq!(budget.file_size(1000), Ok(()));
@@ -1575,9 +1590,9 @@ fn budgets_count_file_size_ratio_and_entries_per_job() {
 
     let mut stream = budget.decompression();
     stream.consumed(1000);
-    assert_eq!(stream.produced(RATIO_FLOOR - 1), Ok(()));
+    assert_eq!(budget.inflate(&mut stream, RATIO_FLOOR - 1), Ok(()));
     assert_eq!(
-        stream.produced(1),
+        budget.inflate(&mut stream, 1),
         Err(Exceeded {
             limit: LimitName::DecompressionRatio,
             value: RATIO_FLOOR / 1000,
@@ -1586,19 +1601,36 @@ fn budgets_count_file_size_ratio_and_entries_per_job() {
     );
     let mut fine = budget.decompression();
     fine.consumed(RATIO_FLOOR);
-    assert_eq!(fine.produced(10 * RATIO_FLOOR), Ok(()));
+    assert_eq!(budget.inflate(&mut fine, 10 * RATIO_FLOOR), Ok(()));
     assert_eq!(fine.ratio(), 10);
-    assert!(fine.produced(1).is_err());
+    assert!(budget.inflate(&mut fine, 1).is_err());
     let mut small = budget.decompression();
-    assert_eq!(small.produced(RATIO_FLOOR - 1), Ok(()));
+    assert_eq!(budget.inflate(&mut small, RATIO_FLOOR - 1), Ok(()));
 
     assert_eq!(budget.entry(), Ok(()));
     let mut nested = budget.nested().unwrap();
     assert_eq!(nested.entries(), 1);
     assert_eq!(nested.entry(), Ok(()));
     assert_eq!(nested.entry(), Ok(()));
-    budget.absorb_entries(&nested);
+    let mut tail = nested.decompression();
+    tail.consumed(RATIO_FLOOR * 4);
+    assert_eq!(nested.inflate(&mut tail, 3 * RATIO_FLOOR), Ok(()));
+    budget.absorb(&nested);
     assert_eq!(budget.entries(), 3);
+    let used = budget.decompressed();
+    assert_eq!(used, 15 * RATIO_FLOOR);
+    let mut last = budget.decompression();
+    last.consumed(u64::MAX);
+    let left = 40 * RATIO_FLOOR - used;
+    assert_eq!(budget.inflate(&mut last, left), Ok(()));
+    assert_eq!(
+        budget.inflate(&mut last, 1),
+        Err(Exceeded {
+            limit: LimitName::TotalDecompressedBytes,
+            value: 40 * RATIO_FLOOR + 1,
+            max: 40 * RATIO_FLOOR,
+        })
+    );
     assert_eq!(
         budget.entry(),
         Err(Exceeded {
@@ -1650,4 +1682,126 @@ fn decode_frame_survives_short_and_interrupted_reads() {
         decode_frame::<WorkerMsg, _>(&mut reader, u64::from(u32::MAX)),
         Ok(None)
     );
+}
+
+#[test]
+fn no_scope_text_or_setting_value_holds_a_carriage_return() {
+    let setting = |value: &str| Fact::ServiceSetting {
+        file_kind: FileKind::Service,
+        location: common::location(
+            "app.service",
+            2,
+            Scope::UnitSection {
+                section: Text::from("Service"),
+                key: Text::from("Type"),
+            },
+        ),
+        section: Text::from("Service"),
+        key: Text::from("Type"),
+        value: Text::from(value),
+    };
+    assert_eq!(setting("forking").validate(), Ok(()));
+    assert_eq!(
+        setting("forking\r").validate(),
+        Err(FactError::CarriageReturn {
+            kind: FactKind::ServiceSetting
+        })
+    );
+    let key = |value: Option<&str>| Fact::ConfigKey {
+        file_kind: FileKind::Config,
+        location: common::location("etc/a.ini", 1, Scope::ConfigKey(Text::from("a.b"))),
+        key: Text::from("a.b"),
+        value: value.map(Text::from),
+    };
+    assert_eq!(key(Some("1")).validate(), Ok(()));
+    assert_eq!(
+        key(Some("1\r")).validate(),
+        Err(FactError::CarriageReturn {
+            kind: FactKind::ConfigKey
+        })
+    );
+    let call = |signature: &str| Fact::Call {
+        file_kind: FileKind::Source,
+        location: common::location(
+            "src/a.cc",
+            3,
+            Scope::Function {
+                qualified_name: Text::from("ns::f"),
+                signature: Text::from(signature),
+            },
+        ),
+        callee: Text::from("g"),
+        args: vec![],
+        guards: vec![],
+    };
+    assert_eq!(call("int, char *").validate(), Ok(()));
+    assert_eq!(
+        call("int,\r\n char *").validate(),
+        Err(FactError::CarriageReturn {
+            kind: FactKind::Call
+        })
+    );
+}
+
+#[test]
+fn the_router_resolves_the_encoding_and_readers_see_only_the_result() {
+    use boxt_core::settings::{Encoding, EncodingDecl, PathPattern};
+    let decl = |pattern: &str, encoding| EncodingDecl {
+        pattern: PathPattern {
+            base: Text::from("/repo"),
+            pattern: Text::from(pattern),
+        },
+        encoding,
+    };
+    let settings = WorkerSettings {
+        limits: Limits::default(),
+        encodings: vec![
+            decl("legacy/", Encoding::Latin1),
+            decl("legacy/win/", Encoding::WindowsCodePage(1252)),
+        ],
+    };
+    let prefix = |path: &'static str| {
+        move |p: &PathPattern| path.as_bytes().starts_with(p.pattern.as_bytes())
+    };
+    assert_eq!(
+        settings.resolve_encoding(prefix("legacy/win/a.c")),
+        Some(Encoding::Latin1)
+    );
+    assert_eq!(settings.resolve_encoding(prefix("src/a.c")), None);
+    let ctx = ReadCtx::new(
+        Location::file(input(), vec![], RelPath::try_from("legacy/a.c").unwrap()),
+        &settings.limits,
+        settings.resolve_encoding(prefix("legacy/a.c")),
+    );
+    assert_eq!(ctx.encoding, Some(Encoding::Latin1));
+}
+
+#[test]
+fn collector_made_outcomes_take_the_key_of_the_first_file_they_cover() {
+    let first = RelPath::try_from("vendor/a.c").unwrap();
+    let key = CanonicalKey::at(0, first.clone(), EntryPath::job());
+    assert_eq!(key.location, None);
+    let job = Job {
+        kind: JobKind::Route,
+        input: input(),
+        file: JobFile::InInput(first),
+        resume_after: None,
+    };
+    assert_eq!(
+        Some(key.clone()),
+        CanonicalKey::for_outcome(&job, &EntryPath::job())
+    );
+    let later = CanonicalKey::at(
+        0,
+        RelPath::try_from("vendor/b.c").unwrap(),
+        EntryPath::job(),
+    );
+    assert!(key < later);
+
+    let whole = Job {
+        file: JobFile::WholeInput(RelPath::try_from("app.rpm").unwrap()),
+        ..job
+    };
+    assert!(whole.is_well_formed());
+    assert_eq!(whole.path().unwrap().as_bytes(), b"app.rpm");
 }

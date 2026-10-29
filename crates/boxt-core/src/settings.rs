@@ -38,6 +38,18 @@ pub struct WorkerSettings {
     pub encodings: Vec<EncodingDecl>,
 }
 
+impl WorkerSettings {
+    pub fn resolve_encoding(
+        &self,
+        mut matches: impl FnMut(&PathPattern) -> bool,
+    ) -> Option<Encoding> {
+        self.encodings
+            .iter()
+            .find(|decl| matches(&decl.pattern))
+            .map(|decl| decl.encoding)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CompileDatabaseSetting {
     pub file: Text,

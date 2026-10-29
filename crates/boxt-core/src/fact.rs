@@ -477,6 +477,7 @@ pub enum FactError {
     NoFrame { kind: FactKind },
     LineZero { kind: FactKind },
     ScopeDiffersFromFields { kind: FactKind },
+    CarriageReturn { kind: FactKind },
     ScriptNameMismatch,
     ScriptNameNotForFormat { kind: FactKind },
     GuardRegion(GuardRegionError),
@@ -521,6 +522,11 @@ impl fmt::Display for FactError {
             FactError::ScopeDiffersFromFields { kind } => write!(
                 f,
                 "fact kind {} has a scope that differs from its own fields",
+                kind.name()
+            ),
+            FactError::CarriageReturn { kind } => write!(
+                f,
+                "fact kind {} holds a CR in its scope or value",
                 kind.name()
             ),
             FactError::ScriptNameMismatch => {
@@ -612,6 +618,30 @@ impl Fact {
         }
     }
 
+    fn holds_carriage_return(&self) -> bool {
+        let cr = |t: &Text| t.as_bytes().contains(&b'\r');
+        let scope = match &self.location().scope {
+            Scope::Function {
+                qualified_name,
+                signature,
+            } => cr(qualified_name) || cr(signature),
+            Scope::Symbol(t) | Scope::ConfigKey(t) => cr(t),
+            Scope::UnitSection { section, key } => cr(section) || cr(key),
+            Scope::File | Scope::Script(_) => false,
+        };
+        let value = match self {
+            Fact::ServiceSetting {
+                section,
+                key,
+                value,
+                ..
+            } => cr(section) || cr(key) || cr(value),
+            Fact::ConfigKey { key, value, .. } => cr(key) || value.as_ref().is_some_and(cr),
+            _ => false,
+        };
+        scope || value
+    }
+
     fn scope_matches_fields(&self) -> bool {
         let scope = &self.location().scope;
         match self {
@@ -663,6 +693,9 @@ impl Fact {
                 kind,
                 rule: rule.line,
             });
+        }
+        if self.holds_carriage_return() {
+            return Err(FactError::CarriageReturn { kind });
         }
         if !self.scope_matches_fields() {
             return Err(FactError::ScopeDiffersFromFields { kind });

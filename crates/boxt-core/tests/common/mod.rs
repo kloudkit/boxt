@@ -405,6 +405,12 @@ pub fn all_collector_msgs() -> Vec<CollectorMsg> {
             resume_after: Some(EntryPath::from([2, 1])),
         }),
         CollectorMsg::Job(Job {
+            kind: JobKind::Route,
+            input: input(),
+            file: JobFile::WholeInput(RelPath::try_from("app-1.2.rpm").unwrap()),
+            resume_after: None,
+        }),
+        CollectorMsg::Job(Job {
             kind: JobKind::CompileDatabase,
             input: input(),
             file: JobFile::Setting(Text::from("/build/compile_commands.json")),

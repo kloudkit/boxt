@@ -243,11 +243,15 @@ impl Limits {
 
     pub fn set(&mut self, name: LimitName, value: u64) -> Result<(), LimitError> {
         check(name, value)?;
-        let mut next = self.clone();
-        next.put(name, value);
-        next.check_cap()?;
-        *self = next;
+        self.put(name, value);
         Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), LimitError> {
+        for name in LimitName::ALL {
+            check(name, self.get(name))?;
+        }
+        self.check_cap()
     }
 
     fn check_cap(&self) -> Result<(), LimitError> {
@@ -289,10 +293,7 @@ impl TryFrom<LimitValues> for Limits {
 
     fn try_from(values: LimitValues) -> Result<Self, LimitError> {
         let limits = Limits(values);
-        for name in LimitName::ALL {
-            check(name, limits.get(name))?;
-        }
-        limits.check_cap()?;
+        limits.validate()?;
         Ok(limits)
     }
 }
