@@ -5,11 +5,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::compile_db::CompileUnit;
-use crate::fact::Fact;
+use crate::fact::{Fact, FileKind};
 use crate::limits::{LimitName, Limits};
-use crate::location::{InputRef, Location, RelPath};
-use crate::outcome::{Details, FileOutcome, NotCheckedReason, Outcome};
+use crate::location::{Frame, InputRef, Location, RelPath, Scope};
+use crate::outcome::{Details, FaultKind, FileOutcome, NotCheckedReason, Outcome};
 use crate::settings::WorkerSettings;
+use crate::text::Text;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -41,6 +42,16 @@ impl EntryPath {
     pub fn is_prefix_of(&self, other: &EntryPath) -> bool {
         other.0.starts_with(&self.0)
     }
+
+    pub fn parent(&self) -> Option<EntryPath> {
+        self.0
+            .split_last()
+            .map(|(_, parent)| EntryPath(parent.to_vec()))
+    }
+
+    pub fn last(&self) -> Option<u32> {
+        self.0.last().copied()
+    }
 }
 
 impl From<&[u32]> for EntryPath {
@@ -63,11 +74,34 @@ pub enum JobKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobFile {
+    InInput(RelPath),
+    Setting(Text),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Job {
     pub kind: JobKind,
     pub input: InputRef,
-    pub path: RelPath,
+    pub file: JobFile,
     pub resume_after: Option<EntryPath>,
+}
+
+impl Job {
+    pub fn path(&self) -> Option<&RelPath> {
+        match &self.file {
+            JobFile::InInput(path) => Some(path),
+            JobFile::Setting(_) => None,
+        }
+    }
+
+    pub fn is_well_formed(&self) -> bool {
+        matches!(
+            (self.kind, &self.file),
+            (JobKind::Route, JobFile::InInput(_)) | (JobKind::CompileDatabase, JobFile::Setting(_))
+        ) && (self.kind == JobKind::Route || self.resume_after.is_none())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -99,6 +133,13 @@ pub enum Note {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerMsg {
+    Opened {
+        entry: EntryPath,
+        frames: Vec<Frame>,
+        path: Option<RelPath>,
+        scope: Scope,
+        file_kind: Option<FileKind>,
+    },
     Facts {
         entry: EntryPath,
         facts: Vec<Fact>,
@@ -114,6 +155,7 @@ pub enum WorkerMsg {
     EntryDone {
         entry: EntryPath,
         outcome: Outcome,
+        bytes: u64,
     },
     CompileUnits {
         entries: Vec<CompileUnit>,
@@ -124,25 +166,52 @@ pub enum WorkerMsg {
 }
 
 impl WorkerMsg {
-    pub fn opened(entry: EntryPath) -> Self {
-        WorkerMsg::Facts {
-            entry,
-            facts: Vec::new(),
-        }
-    }
-
     pub fn entry(&self) -> Option<&EntryPath> {
         match self {
-            WorkerMsg::Facts { entry, .. }
+            WorkerMsg::Opened { entry, .. }
+            | WorkerMsg::Facts { entry, .. }
             | WorkerMsg::Regions { entry, .. }
             | WorkerMsg::Notes { entry, .. }
             | WorkerMsg::EntryDone { entry, .. } => Some(entry),
             WorkerMsg::CompileUnits { .. } | WorkerMsg::JobDone { .. } => None,
         }
     }
+
+    pub fn opened_location(&self, input: &InputRef) -> Option<Location> {
+        match self {
+            WorkerMsg::Opened {
+                frames,
+                path,
+                scope,
+                ..
+            } => Some(Location {
+                input: input.clone(),
+                frames: frames.clone(),
+                path: path.clone(),
+                line: None,
+                scope: scope.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn ends_container(&self) -> Option<EntryPath> {
+        match self {
+            WorkerMsg::EntryDone {
+                entry,
+                outcome:
+                    Outcome {
+                        file: FileOutcome::Aggregate { .. },
+                        ..
+                    },
+                ..
+            } if entry.last().is_some_and(|i| i > 0) => entry.parent(),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CanonicalKey {
     pub input_index: u32,
     pub job_path: RelPath,
@@ -151,22 +220,37 @@ pub struct CanonicalKey {
 }
 
 impl CanonicalKey {
-    pub fn for_fact(job: &Job, entry: &EntryPath, fact: &Fact) -> Self {
-        CanonicalKey {
+    pub fn for_fact(job: &Job, entry: &EntryPath, fact: &Fact) -> Option<Self> {
+        Some(CanonicalKey {
             input_index: job.input.index,
-            job_path: job.path.clone(),
+            job_path: job.path()?.clone(),
             entry: entry.clone(),
             location: Some(fact.location().clone()),
-        }
+        })
     }
 
-    pub fn for_outcome(job: &Job, entry: &EntryPath) -> Self {
-        CanonicalKey {
+    pub fn for_outcome(job: &Job, entry: &EntryPath) -> Option<Self> {
+        Some(CanonicalKey {
             input_index: job.input.index,
-            job_path: job.path.clone(),
+            job_path: job.path()?.clone(),
             entry: entry.clone(),
             location: None,
-        }
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CollectedFile {
+    pub key: CanonicalKey,
+    pub location: Location,
+    pub outcome: Outcome,
+    pub regions: Vec<Region>,
+    pub notes: Vec<Note>,
+}
+
+impl CollectedFile {
+    pub fn has_unreadable_region(&self) -> bool {
+        !self.regions.is_empty()
     }
 }
 
@@ -317,7 +401,8 @@ impl EntryBudget {
             WorkerMsg::Regions { .. } | WorkerMsg::Notes { .. } => {
                 self.bytes = self.bytes.saturating_add(payload_len);
             }
-            WorkerMsg::EntryDone { .. }
+            WorkerMsg::Opened { .. }
+            | WorkerMsg::EntryDone { .. }
             | WorkerMsg::CompileUnits { .. }
             | WorkerMsg::JobDone { .. } => {}
         }
@@ -374,4 +459,118 @@ pub fn faulting_entry(committed: &[EntryPath], last_seen: Option<&EntryPath>) ->
 
 pub fn resume_skips(entry: &EntryPath, after: &EntryPath) -> bool {
     entry <= after || after.is_prefix_of(entry)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FaultScope {
+    Job,
+    Entry(EntryPath),
+    Container(EntryPath),
+    RestOfContainer { at: EntryPath, container: EntryPath },
+}
+
+impl FaultScope {
+    pub fn outcome_entry(&self) -> EntryPath {
+        match self {
+            FaultScope::Job => EntryPath::job(),
+            FaultScope::Entry(entry) => entry.clone(),
+            FaultScope::Container(container) => container.child(0),
+            FaultScope::RestOfContainer { at, .. } => at.clone(),
+        }
+    }
+
+    pub fn resume_after(&self) -> Option<EntryPath> {
+        match self {
+            FaultScope::Job => None,
+            FaultScope::Entry(entry) => Some(entry.clone()),
+            FaultScope::Container(container) => Some(container.clone()),
+            FaultScope::RestOfContainer { container, .. } => {
+                (!container.is_job()).then(|| container.clone())
+            }
+        }
+    }
+
+    pub fn outcome(&self, reason: NotCheckedReason) -> FileOutcome {
+        match self {
+            FaultScope::RestOfContainer { .. } => FileOutcome::Aggregate {
+                reason,
+                count: None,
+                at_least: 1,
+            },
+            _ => FileOutcome::NotChecked {
+                reason,
+                details: Details::None,
+            },
+        }
+    }
+}
+
+pub fn fault_scope(attributed: &EntryPath, opened: bool) -> FaultScope {
+    match attributed.as_slice().split_last() {
+        None | Some((0, [])) => FaultScope::Job,
+        Some((0, container)) => FaultScope::Container(EntryPath::from(container)),
+        Some((_, container)) if !opened => FaultScope::RestOfContainer {
+            at: attributed.clone(),
+            container: EntryPath::from(container),
+        },
+        Some(_) => FaultScope::Entry(attributed.clone()),
+    }
+}
+
+pub const WORKER_MEMORY_CAP_EXIT: i32 = 113;
+pub const PANIC_EXIT: i32 = 101;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Unix,
+    Windows,
+}
+
+impl Platform {
+    pub const HOST: Platform = if cfg!(windows) {
+        Platform::Windows
+    } else {
+        Platform::Unix
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawExit {
+    Code(i32),
+    Signal(i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitClass {
+    Fault(FaultKind),
+    WorkerMemoryCap,
+}
+
+impl ExitClass {
+    pub fn reason(self) -> NotCheckedReason {
+        match self {
+            ExitClass::Fault(kind) => NotCheckedReason::Fault(kind),
+            ExitClass::WorkerMemoryCap => {
+                NotCheckedReason::LimitExceeded(LimitName::WorkerMemoryCap)
+            }
+        }
+    }
+
+    pub fn host_dependent(self) -> bool {
+        matches!(self, ExitClass::WorkerMemoryCap)
+    }
+}
+
+const NTSTATUS_ERROR: u32 = 0xC000_0000;
+
+pub fn classify_exit(platform: Platform, exit: RawExit) -> ExitClass {
+    match (platform, exit) {
+        (_, RawExit::Signal(_)) => ExitClass::Fault(FaultKind::Crash),
+        (_, RawExit::Code(WORKER_MEMORY_CAP_EXIT)) => ExitClass::WorkerMemoryCap,
+        (_, RawExit::Code(PANIC_EXIT)) => ExitClass::Fault(FaultKind::Panic),
+        (Platform::Windows, RawExit::Code(code)) if code as u32 >= NTSTATUS_ERROR => {
+            ExitClass::Fault(FaultKind::Crash)
+        }
+        (_, RawExit::Code(_)) => ExitClass::Fault(FaultKind::Exited),
+    }
 }

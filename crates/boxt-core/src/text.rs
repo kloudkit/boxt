@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use serde::de::{self, MapAccess, Visitor};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -149,6 +149,9 @@ impl fmt::Debug for Text {
 
 impl Serialize for Text {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !serializer.is_human_readable() {
+            return serializer.serialize_bytes(self.as_bytes());
+        }
         match &self.0 {
             Repr::Utf8(s) => serializer.serialize_str(s),
             Repr::Bytes(b) => {
@@ -162,7 +165,37 @@ impl Serialize for Text {
 
 impl<'de> Deserialize<'de> for Text {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(TextVisitor)
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(TextVisitor)
+        } else {
+            deserializer.deserialize_byte_buf(BytesVisitor)
+        }
+    }
+}
+
+struct BytesVisitor;
+
+impl<'de> Visitor<'de> for BytesVisitor {
+    type Value = Text;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the bytes of a Text")
+    }
+
+    fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Text, E> {
+        Ok(Text::from(v))
+    }
+
+    fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> Result<Text, E> {
+        Ok(Text::from_bytes(v))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Text, A::Error> {
+        let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+        while let Some(b) = seq.next_element::<u8>()? {
+            bytes.push(b);
+        }
+        Ok(Text::from_bytes(bytes))
     }
 }
 

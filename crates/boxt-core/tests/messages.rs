@@ -9,7 +9,7 @@ use boxt_core::limits::{LimitName, Limits};
 use boxt_core::location::{InputRef, RelPath, Scope};
 use boxt_core::message::{
     CanonicalKey, CollectorMsg, Decoded, EntryBudget, EntryPath, FRAME_PREFIX_LEN, FrameError, Job,
-    JobKind, Note, Region, RegionReason, WorkerMsg, decode_frame, encode_compile_units,
+    JobFile, JobKind, Note, Region, RegionReason, WorkerMsg, decode_frame, encode_compile_units,
     encode_frame, faulting_entry, resume_skips,
 };
 use boxt_core::outcome::{Details, FileOutcome, NotCheckedReason};
@@ -53,6 +53,7 @@ fn every_worker_message_round_trips() {
     assert_eq!(
         seen,
         BTreeSet::from([
+            "opened",
             "facts",
             "regions",
             "notes",
@@ -289,9 +290,11 @@ fn b10_only_entry_payload_frames_are_charged() {
     let limits = small_limits(1, 10);
     let mut budget = EntryBudget::new(&limits);
     let uncharged = [
+        opened(EntryPath::from([1])),
         WorkerMsg::EntryDone {
             entry: EntryPath::from([1]),
             outcome: all_outcomes().remove(0),
+            bytes: 1_000_000,
         },
         WorkerMsg::CompileUnits { entries: vec![] },
         WorkerMsg::JobDone { outcome: None },
@@ -520,14 +523,7 @@ fn fault_then_resume_sends_each_entry_once() {
 #[test]
 fn a_fault_on_opening_a_sibling_blames_that_sibling() {
     let committed = paths(&[&[0], &[1], &[2, 0], &[2, 1]]);
-    let opened = WorkerMsg::opened(EntryPath::from([3]));
-    assert_eq!(
-        opened,
-        WorkerMsg::Facts {
-            entry: EntryPath::from([3]),
-            facts: vec![]
-        }
-    );
+    let opened = opened(EntryPath::from([3]));
     let last_seen = opened.entry().unwrap();
     let faulted = faulting_entry(&committed, Some(last_seen));
     assert_eq!(faulted, EntryPath::from([3]));
@@ -556,7 +552,7 @@ fn a_fault_on_opening_a_sibling_blames_that_sibling() {
 #[test]
 fn a_fault_moving_to_the_next_child_blames_that_child() {
     let committed = paths(&[&[0], &[1], &[2, 0], &[2, 1]]);
-    let opened = WorkerMsg::opened(EntryPath::from([2, 2]));
+    let opened = opened(EntryPath::from([2, 2]));
     let faulted = faulting_entry(&committed, opened.entry());
     assert_eq!(faulted, EntryPath::from([2, 2]));
     let second_pass = paths(&[
@@ -596,18 +592,19 @@ fn job(index: u32, path: &str) -> Job {
             index,
             given: Text::from(format!("/in/{index}")),
         },
-        path: RelPath::try_from(path).unwrap(),
+        file: JobFile::InInput(RelPath::try_from(path).unwrap()),
         resume_after: None,
     }
 }
 
 fn import_at(index: u32, path: &str, line: u32) -> Fact {
-    let mut location = location(path, line, Scope::File);
+    let mut location = location(path, line, Scope::Symbol(Text::from("dlopen")));
     location.input.index = index;
     Fact::Import {
         file_kind: FileKind::Binary,
         location,
         symbol: Text::from("dlopen"),
+        version: None,
     }
 }
 
@@ -623,7 +620,8 @@ fn b12_canonical_key_orders_input_path_entry_location() {
         CanonicalKey::for_fact(&a, &EntryPath::from([1, 5]), &import_at(0, "z", 9)),
         CanonicalKey::for_fact(&a, &EntryPath::from([1, 5]), &import_at(0, "z", 2)),
         CanonicalKey::for_outcome(&a, &EntryPath::from([1, 5])),
-    ];
+    ]
+    .map(Option::unwrap);
     keys.sort();
     type Row<'a> = (u32, &'a [u8], Vec<u32>, Option<u32>);
     let order: Vec<Row> = keys

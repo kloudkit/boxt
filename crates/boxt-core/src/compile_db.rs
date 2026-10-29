@@ -1,5 +1,8 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
+use crate::outcome::{FaultKind, FileOutcome, NotCheckedReason, Outcome};
 use crate::text::Text;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -42,6 +45,41 @@ pub fn extension_class(file_name: &[u8]) -> Option<CxxClass> {
 
 pub fn classify(file_name: &[u8]) -> CxxClass {
     extension_class(file_name).unwrap_or(CxxClass::Header)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CompileDatabaseError {
+    NotRead(NotCheckedReason),
+    MatchesNoFile,
+}
+
+impl fmt::Display for CompileDatabaseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompileDatabaseError::NotRead(reason) => {
+                write!(f, "the compile database could not be read ({reason:?})")
+            }
+            CompileDatabaseError::MatchesNoFile => {
+                f.write_str("the compile database matches no file in its tree")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CompileDatabaseError {}
+
+impl CompileDatabaseError {
+    pub fn check(job_done: Option<&Outcome>) -> Result<(), CompileDatabaseError> {
+        match job_done.map(|o| &o.file) {
+            Some(FileOutcome::Read) => Ok(()),
+            Some(
+                FileOutcome::NotChecked { reason, .. } | FileOutcome::Aggregate { reason, .. },
+            ) => Err(CompileDatabaseError::NotRead(*reason)),
+            Some(FileOutcome::OutOfScope { .. }) | None => Err(CompileDatabaseError::NotRead(
+                NotCheckedReason::Fault(FaultKind::BadFrame),
+            )),
+        }
+    }
 }
 
 #[cfg(test)]

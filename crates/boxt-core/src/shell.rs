@@ -96,6 +96,31 @@ pub fn lex(text: &Text) -> Result<Vec<ShellCommand>, LexError> {
     Parser::default().run(&tokens)
 }
 
+pub const SHELL_INTERPRETERS: &[&str] = &["sh", "bash", "dash", "ash", "ksh", "mksh"];
+
+pub fn is_shell_interpreter(interpreter: Option<&Text>) -> bool {
+    let Some(interpreter) = interpreter else {
+        return true;
+    };
+    let mut words = interpreter
+        .as_bytes()
+        .split(|&c| c == b' ' || c == b'\t')
+        .filter(|w| !w.is_empty());
+    let base = |w: &[u8]| w.rsplit(|&c| c == b'/').next().unwrap_or(w).to_vec();
+    let Some(first) = words.next().map(base) else {
+        return false;
+    };
+    let program = if first == b"env" {
+        match words.find(|w| !w.starts_with(b"-")) {
+            Some(w) => base(w),
+            None => return false,
+        }
+    } else {
+        first
+    };
+    SHELL_INTERPRETERS.iter().any(|s| s.as_bytes() == program)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
     Newline,

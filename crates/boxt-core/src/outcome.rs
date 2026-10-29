@@ -56,6 +56,7 @@ pub enum NotCheckedReason {
     RepeatedFault,
     SpecialFile(SpecialKind),
     Symlink(LinkTarget),
+    UnsafeEntryName,
     NotInCompileDatabase,
 }
 
@@ -63,8 +64,6 @@ pub enum NotCheckedReason {
 #[serde(rename_all = "snake_case")]
 pub enum FaultKind {
     Crash,
-    Abort,
-    StackOverflow,
     Panic,
     BadFrame,
     Exited,
@@ -89,6 +88,7 @@ pub enum LinkTarget {
     Special(SpecialKind),
     Missing,
     Loop,
+    Unresolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -98,6 +98,7 @@ pub enum Details {
     Measured { value: u64, limit: u64 },
     Encoding { declared: Encoding },
     Interpreter { interpreter: Text },
+    EntryName { name: Text },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

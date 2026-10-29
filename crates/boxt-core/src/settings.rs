@@ -3,6 +3,8 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::Limits;
+use crate::location::InputRef;
+use crate::message::{Job, JobFile, JobKind};
 use crate::sorted::SortedVec;
 use crate::text::Text;
 use crate::verdict::TargetId;
@@ -36,6 +38,12 @@ pub struct WorkerSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CompileDatabaseSetting {
+    pub file: Text,
+    pub tree: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Settings {
     pub inputs: Vec<Text>,
     pub targets: SortedVec<TargetId>,
@@ -44,6 +52,7 @@ pub struct Settings {
     pub excludes: Vec<PathPattern>,
     pub ignored_macros: SortedVec<Text>,
     pub jobs: Option<NonZeroU32>,
+    pub compile_database: Option<CompileDatabaseSetting>,
 }
 
 impl Settings {
@@ -52,6 +61,20 @@ impl Settings {
             limits: self.limits.clone(),
             encodings: self.encodings.clone(),
         }
+    }
+
+    pub fn compile_database_job(&self) -> Option<Job> {
+        let setting = self.compile_database.as_ref()?;
+        let given = self.inputs.get(usize::try_from(setting.tree).ok()?)?;
+        Some(Job {
+            kind: JobKind::CompileDatabase,
+            input: InputRef {
+                index: setting.tree,
+                given: given.clone(),
+            },
+            file: JobFile::Setting(setting.file.clone()),
+            resume_after: None,
+        })
     }
 }
 
@@ -80,6 +103,7 @@ mod tests {
             }],
             ignored_macros: vec![Text::from("DEBUG")].into(),
             jobs: NonZeroU32::new(2),
+            compile_database: None,
         };
         let worker = settings.worker();
         assert_eq!(worker.limits, settings.limits);
@@ -89,7 +113,7 @@ mod tests {
 
     #[test]
     fn zero_jobs_is_refused() {
-        let json = r#"{"inputs":[],"targets":[],"limits":LIMITS,"encodings":[],"excludes":[],"ignored_macros":[],"jobs":0}"#
+        let json = r#"{"inputs":[],"targets":[],"limits":LIMITS,"encodings":[],"excludes":[],"ignored_macros":[],"jobs":0,"compile_database":null}"#
             .replace("LIMITS", &serde_json::to_string(&Limits::default()).unwrap());
         assert!(serde_json::from_str::<Settings>(&json).is_err());
         let ok = json.replace(r#""jobs":0"#, r#""jobs":4"#);

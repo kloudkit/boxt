@@ -6,12 +6,12 @@ use std::path::PathBuf;
 
 use boxt_core::Text;
 use boxt_core::fact::{
-    Branch, COMMON_FIELDS, Directive, FACT_KINDS, Fact, FactError, FactKind, FileKind,
+    COMMON_FIELDS, Directive, FACT_KINDS, Fact, FactError, FactKind, FileKind, PathRule,
 };
 use boxt_core::limits::LimitName;
-use boxt_core::location::{FrameKind, Scope};
+use boxt_core::location::{FrameKind, Scope, ScopeKind, ScriptName};
 use boxt_core::shell::RedirectOp;
-use boxt_core::version::RULE_SCHEMA_VERSION;
+use boxt_core::version::{RULE_SCHEMA_VERSION, SchemaVersion};
 use serde::Serialize;
 use serde::ser::{self, Serializer};
 use serde_json::Value;
@@ -36,13 +36,10 @@ fn table_names_and_fields_match_the_enum() {
         let fact = sample_fact(kind);
         assert_eq!(fact.kind(), kind);
         let json = serde_json::to_value(&fact).unwrap();
-        let object = json.as_object().unwrap();
-        assert_eq!(object["kind"], Value::from(kind.name()));
-        let serialized: BTreeSet<&str> = object
-            .keys()
-            .map(String::as_str)
-            .filter(|k| *k != "kind")
-            .collect();
+        let outer = json.as_object().unwrap();
+        assert_eq!(outer.keys().collect::<Vec<_>>(), vec![kind.name()]);
+        let object = outer[kind.name()].as_object().unwrap();
+        let serialized: BTreeSet<&str> = object.keys().map(String::as_str).collect();
         let declared: BTreeSet<&str> = COMMON_FIELDS.iter().chain(kind.fields()).copied().collect();
         assert_eq!(serialized, declared, "{}", kind.name());
         assert_eq!(
@@ -74,6 +71,7 @@ fn every_fact_carries_an_allowed_file_kind() {
         file_kind: FileKind::Source,
         location: common::location("a.c", 1, boxt_core::location::Scope::File),
         symbol: boxt_core::Text::from("dlopen"),
+        version: None,
     };
     assert_eq!(
         wrong.validate(),
@@ -110,6 +108,7 @@ enum Payload {
 
 enum Container {
     Struct(Fields),
+    Newtype(Shapes),
     Enum(BTreeMap<(u32, String), Payload>),
 }
 
@@ -117,8 +116,6 @@ enum Container {
 struct Registry {
     types: BTreeMap<String, Container>,
 }
-
-const INTERNALLY_TAGGED: &[(&str, &str)] = &[("Fact", "kind")];
 
 fn merge_fields(into: &mut Fields, from: Fields) {
     for (name, shapes) in from {
@@ -137,7 +134,20 @@ impl Registry {
             .or_insert_with(|| Container::Struct(Vec::new()))
         {
             Container::Struct(existing) => merge_fields(existing, fields),
-            Container::Enum(_) => panic!("{name} traced as both struct and enum"),
+            _ => panic!("{name} traced as two kinds of type"),
+        }
+    }
+
+    fn record_newtype(&mut self, name: &str, shape: String) {
+        match self
+            .types
+            .entry(name.to_owned())
+            .or_insert_with(|| Container::Newtype(Shapes::new()))
+        {
+            Container::Newtype(existing) => {
+                existing.insert(shape);
+            }
+            _ => panic!("{name} traced as two kinds of type"),
         }
     }
 
@@ -147,7 +157,7 @@ impl Registry {
             .entry(name.to_owned())
             .or_insert_with(|| Container::Enum(BTreeMap::new()))
         else {
-            panic!("{name} traced as both struct and enum");
+            panic!("{name} traced as two kinds of type");
         };
         let slot = variants
             .entry((index, variant.to_owned()))
@@ -203,7 +213,6 @@ struct StructTracer<'a> {
     reg: &'a mut Registry,
     name: &'static str,
     fields: Fields,
-    tag: Option<String>,
     variant: Option<(u32, &'static str)>,
 }
 
@@ -287,10 +296,12 @@ impl<'a> Serializer for Tracer<'a> {
     }
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
         self,
-        _: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<String, TraceError> {
-        value.serialize(self)
+        let shape = shape_of(self.0, value)?;
+        self.0.record_newtype(name, shape);
+        Ok(name.into())
     }
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
         self,
@@ -362,7 +373,6 @@ impl<'a> Serializer for Tracer<'a> {
             reg: self.0,
             name,
             fields: Vec::new(),
-            tag: None,
             variant: None,
         })
     }
@@ -377,7 +387,6 @@ impl<'a> Serializer for Tracer<'a> {
             reg: self.0,
             name,
             fields: Vec::new(),
-            tag: None,
             variant: Some((index, variant)),
         })
     }
@@ -489,28 +498,18 @@ impl StructTracer<'_> {
         key: &'static str,
         value: &T,
     ) -> Result<(), TraceError> {
-        let tagged = INTERNALLY_TAGGED.contains(&(self.name, key)) && self.variant.is_none();
-        if tagged && let Ok(Value::String(tag)) = serde_json::to_value(value) {
-            self.tag = Some(tag);
-            return Ok(());
-        }
         let shape = shape_of(self.reg, value)?;
         self.fields.push((key.to_owned(), [shape].into()));
         Ok(())
     }
 
     fn finish(self) -> Result<String, TraceError> {
-        match (self.tag, self.variant) {
-            (Some(tag), _) => {
-                let index = FactKind::from_name(&tag).map_or(u32::MAX, |k| k as u32);
-                self.reg
-                    .record_variant(self.name, index, &tag, Payload::Struct(self.fields));
-            }
-            (None, Some((index, variant))) => {
+        match self.variant {
+            Some((index, variant)) => {
                 self.reg
                     .record_variant(self.name, index, variant, Payload::Struct(self.fields));
             }
-            (None, None) => self.reg.record_struct(self.name, self.fields),
+            None => self.reg.record_struct(self.name, self.fields),
         }
         Ok(self.name.into())
     }
@@ -573,18 +572,19 @@ fn traced_facts() -> Vec<Fact> {
             let fact = sample_fact_with(kind, filled);
             for file_kind in kind.file_kinds() {
                 let mut json = serde_json::to_value(&fact).unwrap();
-                json["file_kind"] = serde_json::to_value(file_kind).unwrap();
+                json[kind.name()]["file_kind"] = serde_json::to_value(file_kind).unwrap();
                 facts.push(serde_json::from_value(json).unwrap());
             }
         }
     }
     for scope in scopes() {
         let mut json = serde_json::to_value(sample_fact(FactKind::Call)).unwrap();
-        json["location"]["scope"] = serde_json::to_value(scope).unwrap();
+        json["call"]["location"]["scope"] = serde_json::to_value(scope).unwrap();
         facts.push(serde_json::from_value(json).unwrap());
     }
     let mut raw = serde_json::to_value(sample_fact(FactKind::StringLiteral)).unwrap();
-    raw["value"] = serde_json::to_value(Text::from_bytes(vec![0xff, 0x00])).unwrap();
+    raw["string_literal"]["value"] =
+        serde_json::to_value(Text::from_bytes(vec![0xff, 0x00])).unwrap();
     facts.push(serde_json::from_value(raw).unwrap());
     facts
 }
@@ -635,8 +635,13 @@ fn unit_names<T: Serialize>(all: &[T]) -> Vec<String> {
 
 #[test]
 fn every_scope_variant_has_a_fixture() {
-    let fixture: Vec<&str> = scopes().iter().map(common::scope_variant).collect();
-    assert_eq!(fixture, serde_variants::<Scope>());
+    let names: Vec<&str> = ScopeKind::ALL.iter().map(|k| k.name()).collect();
+    assert_eq!(names, serde_variants::<Scope>());
+    for kind in ScopeKind::ALL {
+        assert_eq!(common::scope_of(kind).kind(), kind);
+    }
+    let fixtures: BTreeSet<ScopeKind> = scopes().iter().map(Scope::kind).collect();
+    assert_eq!(fixtures.len(), ScopeKind::ALL.len());
 }
 
 #[test]
@@ -644,7 +649,15 @@ fn closed_enum_all_lists_every_variant() {
     assert_eq!(unit_names(&FileKind::ALL), serde_variants::<FileKind>());
     assert_eq!(unit_names(&FactKind::ALL), serde_variants::<FactKind>());
     assert_eq!(unit_names(&Directive::ALL), serde_variants::<Directive>());
-    assert_eq!(unit_names(&Branch::ALL), serde_variants::<Branch>());
+    assert_eq!(unit_names(&ScopeKind::ALL), serde_variants::<ScopeKind>());
+    assert_eq!(unit_names(&ScriptName::ALL), serde_variants::<ScriptName>());
+    assert_eq!(unit_names(&PathRule::ALL), serde_variants::<PathRule>());
+    for rule in PathRule::ALL {
+        assert_eq!(
+            serde_json::to_value(rule).unwrap(),
+            Value::from(rule.name())
+        );
+    }
     assert_eq!(unit_names(&FrameKind::ALL), serde_variants::<FrameKind>());
     assert_eq!(unit_names(&RedirectOp::ALL), serde_variants::<RedirectOp>());
     assert_eq!(unit_names(&LimitName::ALL), serde_variants::<LimitName>());
@@ -670,7 +683,10 @@ fn render() -> String {
         let file_kinds: Vec<&str> = spec.file_kinds.iter().map(|k| k.name()).collect();
         writeln!(out).unwrap();
         writeln!(out, "{}", spec.name).unwrap();
+        let scopes: Vec<&str> = spec.scopes.iter().map(|k| k.name()).collect();
         writeln!(out, "  file_kinds: {}", file_kinds.join(", ")).unwrap();
+        writeln!(out, "  scopes: {}", scopes.join(", ")).unwrap();
+        writeln!(out, "  path: {}", spec.path.name()).unwrap();
         writeln!(out, "  fields: {}", spec.fields.join(", ")).unwrap();
         let Some(Payload::Struct(fields)) =
             fact_variants.get(&(spec.kind as u32, spec.name.to_owned()))
@@ -685,6 +701,7 @@ fn render() -> String {
     for (name, container) in reg.types.iter().filter(|(n, _)| *n != "Fact") {
         let body = match container {
             Container::Struct(fields) => fields_text(fields),
+            Container::Newtype(shapes) => union(shapes),
             Container::Enum(variants) => {
                 let parts: Vec<String> = variants
                     .iter()
@@ -717,7 +734,7 @@ fn the_snapshot_holds_no_fixture_values() {
     }
 }
 
-fn snapshot_path(version: u32) -> PathBuf {
+fn snapshot_path(version: SchemaVersion) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("snapshots")
@@ -742,7 +759,8 @@ fn fact_kinds_match_the_snapshot_for_this_rule_schema_version() {
     assert!(
         recorded == current,
         "the Fact kinds changed without a RULE_SCHEMA_VERSION bump. \
-         Bump RULE_SCHEMA_VERSION in src/version.rs, then rerun with \
+         Bump RULE_SCHEMA_VERSION in src/version.rs (the minor for an added kind or \
+         field, the major for anything else), then rerun with \
          BOXT_WRITE_SNAPSHOT=1 to record fact-kinds-v{{new}}.txt. \
          Recorded snapshots are never edited.\n--- recorded\n{recorded}\n--- current\n{current}"
     );
@@ -756,7 +774,7 @@ fn recorded_snapshots_are_never_ahead_of_the_version() {
         .to_path_buf();
     for entry in std::fs::read_dir(dir).unwrap() {
         let name = entry.unwrap().file_name().into_string().unwrap();
-        let version: u32 = name
+        let version: SchemaVersion = name
             .strip_prefix("fact-kinds-v")
             .and_then(|s| s.strip_suffix(".txt"))
             .and_then(|s| s.parse().ok())

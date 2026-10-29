@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fact::{FileKind, GuardFrame};
+use crate::fact::{FileKind, GuardChain};
 use crate::location::Location;
 use crate::outcome::{Sm3, VerdictCounts};
 use crate::sorted::SortedVec;
@@ -174,7 +174,15 @@ pub struct Profile {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RuleCoverage {
     pub rule: RuleId,
-    pub file_kinds: SortedVec<FileKind>,
+    pub file_kinds: SortedVec<SortedVec<FileKind>>,
+}
+
+impl RuleCoverage {
+    pub fn can_fire(&self, read: &[FileKind]) -> bool {
+        self.file_kinds
+            .iter()
+            .any(|all| all.iter().all(|kind| read.contains(kind)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -208,7 +216,7 @@ pub struct Finding {
     pub behaviour: BehaviourId,
     pub confidence: Confidence,
     pub evidence: Evidence,
-    pub guards: Vec<GuardFrame>,
+    pub guards: Vec<GuardChain>,
     pub fix: String,
 }
 
@@ -217,7 +225,7 @@ pub struct Finding {
 pub enum Observation {
     WindowsBranch {
         location: Location,
-        guards: Vec<GuardFrame>,
+        guards: Vec<GuardChain>,
     },
     DynamicLoad {
         location: Location,

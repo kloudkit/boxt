@@ -1,12 +1,16 @@
 #![allow(dead_code)]
 
+pub mod compact;
+
 use boxt_core::Text;
 use boxt_core::compile_db::CompileUnit;
-use boxt_core::fact::{Branch, Directive, Fact, FactKind, FileKind, GuardFrame, RegionId};
+use boxt_core::fact::{Directive, Fact, FactKind, FileKind, GuardChain, GuardFrame, RegionId};
 use boxt_core::limits::{LimitName, Limits};
-use boxt_core::location::{Frame, FrameKind, InputRef, Location, RelPath, Scope};
+use boxt_core::location::{
+    Frame, FrameKind, InputRef, Location, PathText, RelPath, Scope, ScopeKind, ScriptName,
+};
 use boxt_core::message::{
-    CollectorMsg, EntryPath, Job, JobKind, Note, Region, RegionReason, WorkerMsg,
+    CollectorMsg, EntryPath, Job, JobFile, JobKind, Note, Region, RegionReason, WorkerMsg,
 };
 use boxt_core::outcome::{
     Details, FaultKind, FileOutcome, LinkTarget, NotCheckedReason, OutOfScopeCause, Outcome,
@@ -30,80 +34,78 @@ pub fn frame_kinds() -> Vec<FrameKind> {
     FrameKind::ALL.to_vec()
 }
 
-pub fn directives() -> Vec<Directive> {
-    Directive::ALL.to_vec()
-}
-
-pub fn branches() -> Vec<Branch> {
-    Branch::ALL.to_vec()
-}
-
 pub fn redirect_ops() -> Vec<RedirectOp> {
     RedirectOp::ALL.to_vec()
 }
 
-pub fn scope_variant(scope: &Scope) -> &'static str {
-    match scope {
-        Scope::File => "file",
-        Scope::Function { .. } => "function",
-        Scope::Symbol(_) => "symbol",
-        Scope::UnitSection(_) => "unit_section",
-        Scope::ConfigKey(_) => "config_key",
-        Scope::Script(_) => "script",
+pub fn scope_of(kind: ScopeKind) -> Scope {
+    match kind {
+        ScopeKind::File => Scope::File,
+        ScopeKind::Function => function_scope(),
+        ScopeKind::Symbol => Scope::Symbol(Text::from("setuid")),
+        ScopeKind::UnitSection => Scope::UnitSection {
+            section: Text::from("Service"),
+            key: Text::from("Type"),
+        },
+        ScopeKind::ConfigKey => Scope::ConfigKey(Text::from("server.port")),
+        ScopeKind::Script => Scope::Script(ScriptName::PostInstall),
     }
 }
 
 pub fn scopes() -> Vec<Scope> {
-    vec![
-        Scope::File,
-        function_scope(),
-        Scope::Symbol(Text::from("setuid")),
-        Scope::UnitSection(Text::from("Service")),
-        Scope::ConfigKey(Text::from("server.port")),
-        Scope::Script(Text::from("%post")),
-    ]
+    let mut out: Vec<Scope> = ScopeKind::ALL.into_iter().map(scope_of).collect();
+    out.extend(ScriptName::ALL.into_iter().map(Scope::Script));
+    out
 }
 
-pub fn location_with(path: &str, line: Option<u32>, scope: Scope) -> Location {
+pub fn frames() -> Vec<Frame> {
+    frame_kinds()
+        .into_iter()
+        .map(|kind| Frame {
+            kind,
+            name: Text::from("app"),
+        })
+        .collect()
+}
+
+pub fn location_at(path: Option<&str>, line: Option<u32>, scope: Scope) -> Location {
     Location {
         input: input(),
-        frames: frame_kinds()
-            .into_iter()
-            .map(|kind| Frame {
-                kind,
-                name: Text::from("app"),
-            })
-            .collect(),
-        path: RelPath::try_from(path).unwrap(),
+        frames: frames(),
+        path: path.map(|p| RelPath::try_from(p).unwrap()),
         line,
         scope,
     }
 }
 
 pub fn location(path: &str, line: u32, scope: Scope) -> Location {
-    location_with(path, Some(line), scope)
+    location_at(Some(path), Some(line), scope)
 }
 
-pub fn guard() -> GuardFrame {
+pub fn frame(directive: Directive, holds_code: bool) -> GuardFrame {
     GuardFrame {
-        directive: Directive::Ifdef,
-        branch: Branch::Else,
+        directive,
         text: Text::from("#ifdef _WIN32"),
         identifiers: vec![Text::from("_WIN32")].into(),
-        has_alternative: true,
+        holds_code,
     }
 }
 
-pub fn guards() -> Vec<GuardFrame> {
+pub fn guards() -> Vec<GuardChain> {
+    let (openers, rest): (Vec<Directive>, Vec<Directive>) =
+        Directive::ALL.into_iter().partition(|d| d.opens_chain());
     let mut out = Vec::new();
-    for directive in directives() {
-        for branch in branches() {
-            out.push(GuardFrame {
-                directive,
-                branch,
-                ..guard()
-            });
+    for (i, opener) in openers.into_iter().enumerate() {
+        let mut frames = vec![frame(opener, false)];
+        if i == 0 {
+            frames.extend(rest.iter().map(|&d| frame(d, false)));
         }
+        frames.last_mut().unwrap().holds_code = true;
+        out.push(GuardChain {
+            frames,
+            has_alternative: i == 0,
+            region: RegionId(i as u32),
+        });
     }
     out
 }
@@ -121,17 +123,15 @@ pub fn sample_fact(kind: FactKind) -> Fact {
 
 pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
     let some = |t: &str| filled.then(|| Text::from(t));
-    let at =
-        |path: &str, line: u32, scope: Scope| location_with(path, filled.then_some(line), scope);
-    let src = |line| at("src/main.c", line, function_scope());
-    let region = |i| filled.then_some(RegionId(i));
+    let src = |line| location("src/main.c", line, function_scope());
+    let script = Scope::Script(ScriptName::PostInstall);
+    let package = |scope: Scope| location_at(None, None, scope);
     match kind {
         FactKind::Call => Fact::Call {
             file_kind: FileKind::Source,
             location: src(10),
             callee: Text::from("setuid"),
             args: vec![Text::from("0")],
-            region: region(1),
             guards: guards(),
         },
         FactKind::Include => Fact::Include {
@@ -139,27 +139,23 @@ pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
             location: src(1),
             target: Text::from("windows.h"),
             system: true,
-            region: region(0),
             guards: guards(),
         },
         FactKind::StringLiteral => Fact::StringLiteral {
             file_kind: FileKind::Source,
             location: src(12),
             value: Text::from("/var/run/app.pid"),
-            region: region(1),
             guards: guards(),
         },
         FactKind::ConfigKey => Fact::ConfigKey {
             file_kind: FileKind::Config,
-            location: at(
+            location: location(
                 "etc/app.ini",
                 3,
                 Scope::ConfigKey(Text::from("server.port")),
             ),
             key: Text::from("server.port"),
             value: some("80"),
-            region: region(0),
-            guards: guards(),
         },
         FactKind::GuardRegion => Fact::GuardRegion {
             file_kind: FileKind::Source,
@@ -170,49 +166,58 @@ pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
         },
         FactKind::Import => Fact::Import {
             file_kind: FileKind::Binary,
-            location: at("usr/bin/app", 0, Scope::Symbol(Text::from("setuid"))),
+            location: location_at(
+                Some("usr/bin/app"),
+                None,
+                Scope::Symbol(Text::from("setuid")),
+            ),
             symbol: Text::from("setuid"),
+            version: some("GLIBC_2.2.5"),
         },
         FactKind::Export => Fact::Export {
             file_kind: FileKind::Binary,
-            location: at(
-                "usr/lib/libapp.so",
-                0,
+            location: location_at(
+                Some("usr/lib/libapp.so"),
+                None,
                 Scope::Symbol(Text::from("app_init")),
             ),
             symbol: Text::from("app_init"),
+            version: some("APP_1.0"),
         },
         FactKind::NeededLibrary => Fact::NeededLibrary {
             file_kind: FileKind::Binary,
-            location: at("usr/bin/app", 0, Scope::File),
+            location: location_at(Some("usr/bin/app"), None, Scope::File),
             name: Text::from("libssl.so.3"),
         },
         FactKind::PackageFile => Fact::PackageFile {
             file_kind: FileKind::Package,
-            location: at("app.rpm", 0, Scope::File),
-            path: Text::from("/opt/app/bin/app"),
-            mode: filled.then_some(0o4755),
+            location: package(Scope::File),
+            path: PathText::from("/opt/app/bin/app"),
+            mode: filled.then_some(0o104755),
             user: some("root"),
             group: some("root"),
         },
         FactKind::PackageDependency => Fact::PackageDependency {
             file_kind: FileKind::Package,
-            location: at("app.rpm", 0, Scope::File),
+            location: package(Scope::File),
             name: Text::from("glibc"),
             constraint: some(">= 2.17"),
         },
         FactKind::PackageScript => Fact::PackageScript {
             file_kind: FileKind::Package,
-            location: at("app.rpm", 0, Scope::Script(Text::from("%post"))),
-            name: Text::from("%post"),
+            location: package(script.clone()),
+            name: ScriptName::PostInstall,
             interpreter: some("/bin/sh"),
         },
         FactKind::ServiceSetting => Fact::ServiceSetting {
             file_kind: FileKind::Service,
-            location: at(
+            location: location(
                 "usr/lib/systemd/system/app.service",
                 7,
-                Scope::UnitSection(Text::from("Service")),
+                Scope::UnitSection {
+                    section: Text::from("Service"),
+                    key: Text::from("Type"),
+                },
             ),
             section: Text::from("Service"),
             key: Text::from("Type"),
@@ -220,7 +225,7 @@ pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
         },
         FactKind::ShellCommand => Fact::ShellCommand {
             file_kind: FileKind::Package,
-            location: at("app.rpm", 2, Scope::Script(Text::from("%post"))),
+            location: location_at(None, Some(2), script),
             assignments: vec![Assignment {
                 name: Text::from("HOME"),
                 append: false,
@@ -253,7 +258,7 @@ pub fn not_checked(reason: NotCheckedReason, details: Details) -> FileOutcome {
 }
 
 pub fn all_reasons() -> Vec<NotCheckedReason> {
-    let reasons = vec![
+    let mut reasons = vec![
         NotCheckedReason::NoReader,
         NotCheckedReason::EncodingUndeclared,
         NotCheckedReason::InvalidForDeclaredEncoding,
@@ -262,13 +267,24 @@ pub fn all_reasons() -> Vec<NotCheckedReason> {
         NotCheckedReason::NoDecoder,
         NotCheckedReason::LimitExceeded(LimitName::EntryFacts),
         NotCheckedReason::LimitExceeded(LimitName::Watchdog),
-        NotCheckedReason::LimitExceeded(LimitName::Memory),
-        NotCheckedReason::Fault(FaultKind::StackOverflow),
+        NotCheckedReason::LimitExceeded(LimitName::WorkerMemoryCap),
+        NotCheckedReason::Fault(FaultKind::Crash),
         NotCheckedReason::RepeatedFault,
         NotCheckedReason::SpecialFile(SpecialKind::Fifo),
         NotCheckedReason::Symlink(LinkTarget::Special(SpecialKind::Socket)),
+        NotCheckedReason::Symlink(LinkTarget::Unresolved),
+        NotCheckedReason::UnsafeEntryName,
         NotCheckedReason::NotInCompileDatabase,
     ];
+    reasons.extend(
+        [
+            FaultKind::Crash,
+            FaultKind::Panic,
+            FaultKind::BadFrame,
+            FaultKind::Exited,
+        ]
+        .map(NotCheckedReason::Fault),
+    );
     for reason in &reasons {
         match reason {
             NotCheckedReason::NoReader
@@ -282,6 +298,7 @@ pub fn all_reasons() -> Vec<NotCheckedReason> {
             | NotCheckedReason::RepeatedFault
             | NotCheckedReason::SpecialFile(_)
             | NotCheckedReason::Symlink(_)
+            | NotCheckedReason::UnsafeEntryName
             | NotCheckedReason::NotInCompileDatabase => {}
         }
     }
@@ -308,6 +325,12 @@ pub fn all_outcomes() -> Vec<Outcome> {
             NotCheckedReason::UnsupportedInterpreter,
             Details::Interpreter {
                 interpreter: Text::from_bytes(b"<lua>\xff".to_vec()),
+            },
+        ),
+        not_checked(
+            NotCheckedReason::UnsafeEntryName,
+            Details::EntryName {
+                name: Text::from("../../etc/passwd"),
             },
         ),
         FileOutcome::Aggregate {
@@ -369,20 +392,55 @@ pub fn all_collector_msgs() -> Vec<CollectorMsg> {
         CollectorMsg::Job(Job {
             kind: JobKind::Route,
             input: input(),
-            path: RelPath::try_from("pkg/app-1.2.rpm").unwrap(),
+            file: JobFile::InInput(RelPath::try_from("pkg/app-1.2.rpm").unwrap()),
             resume_after: Some(EntryPath::from([2, 1])),
         }),
         CollectorMsg::Job(Job {
             kind: JobKind::CompileDatabase,
             input: input(),
-            path: RelPath::try_from("build/compile_commands.json").unwrap(),
+            file: JobFile::Setting(Text::from("/build/compile_commands.json")),
             resume_after: None,
         }),
     ]
 }
 
+pub fn opened(entry: EntryPath) -> WorkerMsg {
+    WorkerMsg::Opened {
+        entry,
+        frames: frames(),
+        path: Some(RelPath::try_from("usr/bin/app").unwrap()),
+        scope: Scope::File,
+        file_kind: Some(FileKind::Binary),
+    }
+}
+
 pub fn all_worker_msgs() -> Vec<WorkerMsg> {
     let mut msgs = vec![
+        opened(EntryPath::job()),
+        WorkerMsg::Opened {
+            entry: EntryPath::from([0]),
+            frames: vec![Frame {
+                kind: FrameKind::Rpm,
+                name: Text::from("app"),
+            }],
+            path: None,
+            scope: Scope::File,
+            file_kind: Some(FileKind::Package),
+        },
+        WorkerMsg::Opened {
+            entry: EntryPath::from([4]),
+            frames: frames(),
+            path: None,
+            scope: Scope::Script(ScriptName::PostInstall),
+            file_kind: Some(FileKind::Package),
+        },
+        WorkerMsg::Opened {
+            entry: EntryPath::from([5]),
+            frames: vec![],
+            path: Some(RelPath::try_from("docs/README").unwrap()),
+            scope: Scope::File,
+            file_kind: None,
+        },
         WorkerMsg::Facts {
             entry: EntryPath::from([0]),
             facts: all_facts(),
@@ -391,9 +449,8 @@ pub fn all_worker_msgs() -> Vec<WorkerMsg> {
             entry: EntryPath::job(),
             facts: vec![Fact::StringLiteral {
                 file_kind: FileKind::Binary,
-                location: location("usr/bin/app", 0, Scope::File),
+                location: location_at(Some("usr/bin/app"), None, Scope::File),
                 value: Text::from_bytes(vec![0xff, 0x00, b'x']),
-                region: None,
                 guards: vec![],
             }],
         },
@@ -421,6 +478,7 @@ pub fn all_worker_msgs() -> Vec<WorkerMsg> {
         msgs.push(WorkerMsg::EntryDone {
             entry: EntryPath::from([1, i as u32]),
             outcome: outcome.clone(),
+            bytes: i as u64 * 1000,
         });
         msgs.push(WorkerMsg::JobDone {
             outcome: Some(outcome),
@@ -438,6 +496,7 @@ pub fn collector_variant(msg: &CollectorMsg) -> &'static str {
 
 pub fn worker_variant(msg: &WorkerMsg) -> &'static str {
     match msg {
+        WorkerMsg::Opened { .. } => "opened",
         WorkerMsg::Facts { .. } => "facts",
         WorkerMsg::Regions { .. } => "regions",
         WorkerMsg::Notes { .. } => "notes",

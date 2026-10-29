@@ -1,0 +1,109 @@
+rule_schema_version: 1.0
+common: file_kind, location
+
+call
+  file_kinds: source
+  scopes: file, function
+  path: file
+  fields: callee, args, guards
+  shape: {file_kind: FileKind, location: Location, callee: string, args: [string], guards: [GuardChain]}
+
+include
+  file_kinds: source
+  scopes: file, function
+  path: file
+  fields: target, system, guards
+  shape: {file_kind: FileKind, location: Location, target: string, system: bool, guards: [GuardChain]}
+
+string_literal
+  file_kinds: source, binary
+  scopes: file, function
+  path: file
+  fields: value, guards
+  shape: {file_kind: FileKind, location: Location, value: string | {bytes_base64: string}, guards: [GuardChain]}
+
+config_key
+  file_kinds: config
+  scopes: config_key
+  path: file
+  fields: key, value
+  shape: {file_kind: FileKind, location: Location, key: string, value: string | null}
+
+guard_region
+  file_kinds: source
+  scopes: file, function
+  path: file
+  fields: region, guards, end_line
+  shape: {file_kind: FileKind, location: Location, region: u32, guards: [GuardChain], end_line: u32}
+
+import
+  file_kinds: binary
+  scopes: symbol
+  path: file
+  fields: symbol, version
+  shape: {file_kind: FileKind, location: Location, symbol: string, version: string | null}
+
+export
+  file_kinds: binary
+  scopes: symbol
+  path: file
+  fields: symbol, version
+  shape: {file_kind: FileKind, location: Location, symbol: string, version: string | null}
+
+needed_library
+  file_kinds: binary
+  scopes: file
+  path: file
+  fields: name
+  shape: {file_kind: FileKind, location: Location, name: string}
+
+package_file
+  file_kinds: package
+  scopes: file
+  path: frame
+  fields: path, mode, user, group
+  shape: {file_kind: FileKind, location: Location, path: PathText, mode: u32 | null, user: string | null, group: string | null}
+
+package_dependency
+  file_kinds: package
+  scopes: file
+  path: frame
+  fields: name, constraint
+  shape: {file_kind: FileKind, location: Location, name: string, constraint: string | null}
+
+package_script
+  file_kinds: package
+  scopes: script
+  path: frame
+  fields: name, interpreter
+  shape: {file_kind: FileKind, location: Location, name: ScriptName, interpreter: string | null}
+
+service_setting
+  file_kinds: service
+  scopes: unit_section
+  path: file
+  fields: section, key, value
+  shape: {file_kind: FileKind, location: Location, section: string, key: string, value: string}
+
+shell_command
+  file_kinds: package, service
+  scopes: script, file
+  path: frame_for_scripts
+  fields: assignments, argv, redirections
+  shape: {file_kind: FileKind, location: Location, assignments: [Assignment], argv: [string], redirections: [Redirection]}
+
+types
+  Assignment = {name: string, append: bool, value: string}
+  Directive = if | ifdef | ifndef | elif | elifdef | elifndef | else
+  FileKind = source | binary | package | service | config
+  Frame = {kind: FrameKind, name: string}
+  FrameKind = rpm | deb | archive
+  GuardChain = {frames: [GuardFrame], has_alternative: bool, region: u32}
+  GuardFrame = {directive: Directive, text: string, identifiers: [string], holds_code: bool}
+  InputRef = {index: u32, given: string}
+  Location = {input: InputRef, frames: [Frame], path: string | null, line: u32 | null, scope: Scope}
+  PathText = string
+  RedirectOp = write | append | clobber | read | read_write | dup_out | dup_in | write_both | append_both | here_doc | here_string
+  Redirection = {fd: u32 | null, op: RedirectOp, target: string}
+  Scope = file | function {qualified_name: string, signature: string} | symbol(string) | unit_section {section: string, key: string} | config_key(string) | script(ScriptName)
+  ScriptName = pre_transaction | pre_install | post_install | pre_remove | post_remove | post_transaction | pre_remove_transaction | post_remove_transaction | verify | trigger_pre_install | trigger_install | trigger_remove | trigger_post_remove | file_trigger_install | file_trigger_remove | file_trigger_post_remove | transaction_file_trigger_install | transaction_file_trigger_remove | transaction_file_trigger_post_remove | config

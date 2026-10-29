@@ -14,6 +14,8 @@ closed_enum! {
         TotalEntries,
         TotalDecompressedBytes,
         Watchdog,
+        RunWatchdog,
+        WorkerMemoryCap,
         EntryFacts,
         EntryMessageBytes,
     }
@@ -72,7 +74,7 @@ pub const LIMITS: &[LimitSpec] = &[
         flag: "memory",
         scope: LimitScope::PerFile,
         unit: LimitUnit::Bytes,
-        default: GIB,
+        default: 256 * MIB,
     },
     LimitSpec {
         name: LimitName::ArchiveDepth,
@@ -108,6 +110,20 @@ pub const LIMITS: &[LimitSpec] = &[
         scope: LimitScope::LastResort,
         unit: LimitUnit::Seconds,
         default: 600,
+    },
+    LimitSpec {
+        name: LimitName::RunWatchdog,
+        flag: "run-watchdog",
+        scope: LimitScope::LastResort,
+        unit: LimitUnit::Seconds,
+        default: 6 * 60 * 60,
+    },
+    LimitSpec {
+        name: LimitName::WorkerMemoryCap,
+        flag: "worker-memory-cap",
+        scope: LimitScope::LastResort,
+        unit: LimitUnit::Bytes,
+        default: 2 * GIB,
     },
     LimitSpec {
         name: LimitName::EntryFacts,
@@ -147,7 +163,10 @@ impl LimitName {
 pub enum LimitError {
     Zero(LimitName),
     AboveMax { name: LimitName, max: u64 },
+    CapBelowMemory { cap: u64, memory: u64 },
 }
+
+pub const MEMORY_CAP_FACTOR: u64 = 4;
 
 impl fmt::Display for LimitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -156,6 +175,12 @@ impl fmt::Display for LimitError {
             LimitError::AboveMax { name, max } => {
                 write!(f, "limit {} must be at most {max}", name.flag())
             }
+            LimitError::CapBelowMemory { cap, memory } => write!(
+                f,
+                "limit {} ({cap}) must be at least {MEMORY_CAP_FACTOR} times limit {} ({memory})",
+                LimitName::WorkerMemoryCap.flag(),
+                LimitName::Memory.flag()
+            ),
         }
     }
 }
@@ -187,6 +212,8 @@ struct LimitValues {
     total_entries: u64,
     total_decompressed_bytes: u64,
     watchdog: u64,
+    run_watchdog: u64,
+    worker_memory_cap: u64,
     entry_facts: u64,
     entry_message_bytes: u64,
 }
@@ -207,6 +234,8 @@ impl Limits {
             LimitName::TotalEntries => v.total_entries,
             LimitName::TotalDecompressedBytes => v.total_decompressed_bytes,
             LimitName::Watchdog => v.watchdog,
+            LimitName::RunWatchdog => v.run_watchdog,
+            LimitName::WorkerMemoryCap => v.worker_memory_cap,
             LimitName::EntryFacts => v.entry_facts,
             LimitName::EntryMessageBytes => v.entry_message_bytes,
         }
@@ -214,6 +243,23 @@ impl Limits {
 
     pub fn set(&mut self, name: LimitName, value: u64) -> Result<(), LimitError> {
         check(name, value)?;
+        let mut next = self.clone();
+        next.put(name, value);
+        next.check_cap()?;
+        *self = next;
+        Ok(())
+    }
+
+    fn check_cap(&self) -> Result<(), LimitError> {
+        let cap = self.get(LimitName::WorkerMemoryCap);
+        let memory = self.get(LimitName::Memory);
+        if cap < memory.saturating_mul(MEMORY_CAP_FACTOR) {
+            return Err(LimitError::CapBelowMemory { cap, memory });
+        }
+        Ok(())
+    }
+
+    fn put(&mut self, name: LimitName, value: u64) {
         let v = &mut self.0;
         let slot = match name {
             LimitName::FileSize => &mut v.file_size,
@@ -224,11 +270,12 @@ impl Limits {
             LimitName::TotalEntries => &mut v.total_entries,
             LimitName::TotalDecompressedBytes => &mut v.total_decompressed_bytes,
             LimitName::Watchdog => &mut v.watchdog,
+            LimitName::RunWatchdog => &mut v.run_watchdog,
+            LimitName::WorkerMemoryCap => &mut v.worker_memory_cap,
             LimitName::EntryFacts => &mut v.entry_facts,
             LimitName::EntryMessageBytes => &mut v.entry_message_bytes,
         };
         *slot = value;
-        Ok(())
     }
 
     pub fn with(mut self, name: LimitName, value: u64) -> Result<Self, LimitError> {
@@ -245,6 +292,7 @@ impl TryFrom<LimitValues> for Limits {
         for name in LimitName::ALL {
             check(name, limits.get(name))?;
         }
+        limits.check_cap()?;
         Ok(limits)
     }
 }
@@ -266,6 +314,8 @@ impl Default for Limits {
             total_entries: LimitName::TotalEntries.default_value(),
             total_decompressed_bytes: LimitName::TotalDecompressedBytes.default_value(),
             watchdog: LimitName::Watchdog.default_value(),
+            run_watchdog: LimitName::RunWatchdog.default_value(),
+            worker_memory_cap: LimitName::WorkerMemoryCap.default_value(),
             entry_facts: LimitName::EntryFacts.default_value(),
             entry_message_bytes: LimitName::EntryMessageBytes.default_value(),
         })
@@ -297,11 +347,15 @@ mod tests {
     #[test]
     fn set_then_get() {
         let mut limits = Limits::default();
+        let value = |i: usize, name: LimitName| match name {
+            LimitName::WorkerMemoryCap => 1 << 40,
+            _ => i as u64 + 1,
+        };
         for (i, name) in LimitName::ALL.into_iter().enumerate() {
-            limits.set(name, i as u64 + 1).unwrap();
+            limits.set(name, value(i, name)).unwrap();
         }
         for (i, name) in LimitName::ALL.into_iter().enumerate() {
-            assert_eq!(limits.get(name), i as u64 + 1);
+            assert_eq!(limits.get(name), value(i, name));
         }
         let json = serde_json::to_string(&limits).unwrap();
         assert_eq!(serde_json::from_str::<Limits>(&json).unwrap(), limits);
