@@ -56,9 +56,47 @@ pub struct WorkBudget {
     max_work: u64,
     max_bytes: u64,
     max_depth: u64,
+    max_file_size: u64,
+    max_ratio: u64,
+    max_entries: u64,
     work: u64,
     bytes: u64,
     depth: u64,
+    entries: u64,
+}
+
+pub const RATIO_FLOOR: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decompression {
+    max_ratio: u64,
+    compressed: u64,
+    produced: u64,
+}
+
+impl Decompression {
+    pub fn consumed(&mut self, compressed: u64) {
+        self.compressed = self.compressed.saturating_add(compressed);
+    }
+
+    pub fn produced(&mut self, bytes: u64) -> Result<(), Exceeded> {
+        self.produced = self.produced.saturating_add(bytes);
+        if self.produced < RATIO_FLOOR {
+            return Ok(());
+        }
+        if self.produced > self.compressed.saturating_mul(self.max_ratio) {
+            return Err(Exceeded {
+                limit: LimitName::DecompressionRatio,
+                value: self.produced / self.compressed.max(1),
+                max: self.max_ratio,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn ratio(&self) -> u64 {
+        self.produced / self.compressed.max(1)
+    }
 }
 
 fn charge(limit: LimitName, total: &mut u64, add: u64, max: u64) -> Result<(), Exceeded> {
@@ -79,10 +117,50 @@ impl WorkBudget {
             max_work: limits.get(LimitName::Work),
             max_bytes: limits.get(LimitName::Memory),
             max_depth: limits.get(LimitName::ArchiveDepth),
+            max_file_size: limits.get(LimitName::FileSize),
+            max_ratio: limits.get(LimitName::DecompressionRatio),
+            max_entries: limits.get(LimitName::TotalEntries),
             work: 0,
             bytes: 0,
             depth: 0,
+            entries: 0,
         }
+    }
+
+    pub fn file_size(&self, size: u64) -> Result<(), Exceeded> {
+        if size > self.max_file_size {
+            return Err(Exceeded {
+                limit: LimitName::FileSize,
+                value: size,
+                max: self.max_file_size,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn decompression(&self) -> Decompression {
+        Decompression {
+            max_ratio: self.max_ratio,
+            compressed: 0,
+            produced: 0,
+        }
+    }
+
+    pub fn entry(&mut self) -> Result<(), Exceeded> {
+        charge(
+            LimitName::TotalEntries,
+            &mut self.entries,
+            1,
+            self.max_entries,
+        )
+    }
+
+    pub fn absorb_entries(&mut self, child: &WorkBudget) {
+        self.entries = self.entries.max(child.entries);
+    }
+
+    pub fn entries(&self) -> u64 {
+        self.entries
     }
 
     pub fn work(&mut self, steps: u64) -> Result<(), Exceeded> {
@@ -124,7 +202,7 @@ impl WorkBudget {
 pub struct ReadCtx<'a> {
     pub location: Location,
     pub settings: &'a WorkerSettings,
-    pub budget: WorkBudget,
+    budget: WorkBudget,
 }
 
 impl<'a> ReadCtx<'a> {
@@ -134,6 +212,50 @@ impl<'a> ReadCtx<'a> {
             settings,
             budget: WorkBudget::new(&settings.limits),
         }
+    }
+
+    pub fn with_budget(
+        location: Location,
+        settings: &'a WorkerSettings,
+        budget: WorkBudget,
+    ) -> Self {
+        ReadCtx {
+            location,
+            settings,
+            budget,
+        }
+    }
+
+    pub fn budget(&self) -> &WorkBudget {
+        &self.budget
+    }
+
+    pub fn into_budget(self) -> WorkBudget {
+        self.budget
+    }
+
+    pub fn work(&mut self, steps: u64) -> Result<(), Exceeded> {
+        self.budget.work(steps)
+    }
+
+    pub fn buffer(&mut self, bytes: u64) -> Result<(), Exceeded> {
+        self.budget.buffer(bytes)
+    }
+
+    pub fn release(&mut self, bytes: u64) {
+        self.budget.release(bytes);
+    }
+
+    pub fn file_size(&self, size: u64) -> Result<(), Exceeded> {
+        self.budget.file_size(size)
+    }
+
+    pub fn decompression(&self) -> Decompression {
+        self.budget.decompression()
+    }
+
+    pub fn entry(&mut self) -> Result<(), Exceeded> {
+        self.budget.entry()
     }
 
     pub fn at(&self, line: Option<u32>, scope: Scope) -> Location {

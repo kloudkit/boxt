@@ -5,29 +5,31 @@ use std::io::Cursor;
 use boxt_core::Text;
 use boxt_core::compile_db::CompileDatabaseError;
 use boxt_core::fact::{
-    Directive, Fact, FactError, FactKind, FileKind, GuardChain, GuardError, PathRule, RegionId,
+    Directive, Fact, FactError, FactKind, FileKind, GuardChain, GuardError, GuardRegionError,
+    LineRule, PathRule, RegionId,
 };
 use boxt_core::limits::{LimitError, LimitName, Limits, MEMORY_CAP_FACTOR};
 use boxt_core::location::{
-    EntryNameError, Frame, FrameKind, Location, PathText, RelPath, SCRIPT_NAMES, Scope, ScriptName,
-    entry_path, frame_name, normalize_value_path,
+    EntryNameError, Frame, FrameKind, Location, PathText, RelPath, SCRIPT_NAMES, Scope, ScopeKind,
+    ScriptName, entry_path, frame_name, normalize_value_path,
 };
 use boxt_core::message::{
     CanonicalKey, CollectedFile, CollectorMsg, EntryBudget, EntryPath, ExitClass, FaultScope, Job,
-    JobFile, JobKind, Note, PANIC_EXIT, Platform, RawExit, Region, RegionReason,
-    WORKER_MEMORY_CAP_EXIT, WorkerMsg, classify_exit, decode_frame, encode_frame, fault_scope,
-    faulting_entry, resume_skips,
+    JobFile, JobKind, Note, PANIC_EXIT, ParentKill, Platform, RawExit, Region, RegionError,
+    RegionReason, WORKER_MEMORY_CAP_EXIT, WorkerExit, WorkerMsg, classify_exit, decode_frame,
+    encode_frame, fault_scope, faulting_entry, resume_skips,
 };
 use boxt_core::outcome::{
-    Details, FaultKind, FileOutcome, NotCheckedReason, Outcome, sm3_share, verdict_counts,
+    Count, Details, FaultKind, FileOutcome, NotCheckedReason, Outcome, OutcomeError, sm3_share,
+    verdict_counts,
 };
 use boxt_core::read::{
     Container, ContainerReader, Entry, EntryKind, EntryName, Exceeded, FactSink, Input, NotRead,
-    ReadCtx, ReadResult, Reader, WorkBudget,
+    RATIO_FLOOR, ReadCtx, ReadResult, Reader, WorkBudget,
 };
 use boxt_core::settings::{CompileDatabaseSetting, Settings, WorkerSettings};
 use boxt_core::shell::{self, is_shell_interpreter};
-use boxt_core::verdict::{RuleCoverage, RuleId};
+use boxt_core::verdict::{CoverageError, RuleCoverage, RuleId};
 use boxt_core::version::{RULE_SCHEMA_VERSION, SchemaVersion, Versions};
 
 use common::{compact, frame, input, opened, sample_fact, worker_settings};
@@ -41,7 +43,7 @@ impl Reader for LineReader {
 
     fn read(&self, bytes: &[u8], ctx: &mut ReadCtx<'_>, sink: &mut dyn FactSink) -> ReadResult {
         for line in bytes.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
-            ctx.budget.work(1)?;
+            ctx.work(1)?;
             sink.fact(Fact::StringLiteral {
                 file_kind: self.file_kind(),
                 location: ctx.at(None, Scope::File),
@@ -78,7 +80,7 @@ impl ContainerReader for PackedReader {
         if &magic != b"PACK" {
             return Err(NotRead::new(NotCheckedReason::Unparseable));
         }
-        ctx.budget.work(1)?;
+        ctx.work(1)?;
         let data = match input {
             Input::Stream(r) => r,
             Input::Seekable(r) => r as &mut dyn std::io::Read,
@@ -109,7 +111,7 @@ impl Container for Packed<'_> {
         let bad = |_| NotRead::new(NotCheckedReason::Unparseable);
         self.data.read_exact(&mut name).map_err(bad)?;
         self.data.read_exact(&mut body).map_err(bad)?;
-        ctx.budget.buffer(body.len() as u64)?;
+        ctx.buffer(body.len() as u64)?;
         let size = Some(body.len() as u64);
         self.current = Cursor::new(body);
         Ok(Some(Entry {
@@ -202,8 +204,11 @@ fn route(
         kind: containers.frame_kind(),
         name,
     }];
-    let mut base = ReadCtx::new(Location::frame(input(), frames.clone()), settings);
-    base.budget = ctx.budget.nested()?;
+    let mut base = ReadCtx::with_budget(
+        Location::frame(input(), frames.clone()),
+        settings,
+        ctx.budget().nested()?,
+    );
     let mut out = Vec::new();
     let mut index = 1;
     while let Some(mut entry) = container.next_entry(&mut base)? {
@@ -505,18 +510,34 @@ fn f3_install_scripts_are_entries_of_their_package_frame() {
         command(Some("etc/init.d/app"), Scope::File, FileKind::Service).validate(),
         Ok(())
     );
-    for bad in [
-        command(Some("etc/init.d/app"), in_script, FileKind::Package),
-        command(None, Scope::File, FileKind::Service),
-    ] {
-        assert_eq!(
-            bad.validate(),
-            Err(FactError::PathNotAllowed {
-                kind: FactKind::ShellCommand,
-                rule: PathRule::FrameForScripts,
-            })
-        );
-    }
+    assert_eq!(
+        command(Some("etc/init.d/app"), in_script.clone(), FileKind::Package).validate(),
+        Err(FactError::PathNotAllowed {
+            kind: FactKind::ShellCommand,
+            rule: PathRule::Frame,
+        })
+    );
+    assert_eq!(
+        command(None, Scope::File, FileKind::Service).validate(),
+        Err(FactError::PathNotAllowed {
+            kind: FactKind::ShellCommand,
+            rule: PathRule::File,
+        })
+    );
+    assert_eq!(
+        command(Some("etc/init.d/app"), Scope::File, FileKind::Package).validate(),
+        Err(FactError::ScopeNotAllowed {
+            kind: FactKind::ShellCommand,
+            scope: ScopeKind::File,
+        })
+    );
+    assert_eq!(
+        command(None, in_script, FileKind::Service).validate(),
+        Err(FactError::ScopeNotAllowed {
+            kind: FactKind::ShellCommand,
+            scope: ScopeKind::Script,
+        })
+    );
 
     for (interpreter, shell) in [
         (None, true),
@@ -529,7 +550,19 @@ fn f3_install_scripts_are_entries_of_their_package_frame() {
         (Some("/usr/bin/perl"), false),
         (Some("/sbin/ldconfig"), false),
         (Some("/usr/bin/env"), false),
-        (Some(""), false),
+        (Some(""), true),
+        (Some("  \t "), true),
+        (Some("/bin/sh\r"), true),
+        (Some("/bin/bash -e\r"), true),
+        (Some("/usr/bin/env -u X bash"), true),
+        (Some("/usr/bin/env -u X"), false),
+        (Some("/usr/bin/env LC_ALL=C sh"), true),
+        (Some("/usr/bin/env -C /tmp LC_ALL=C dash"), true),
+        (Some("/usr/bin/env -S bash -e"), true),
+        (Some("/usr/bin/env -Sbash"), true),
+        (Some("/usr/bin/env -S"), false),
+        (Some("/usr/bin/env LC_ALL=C perl"), false),
+        (Some("/usr/bin/env -u bash perl"), false),
     ] {
         let interpreter = interpreter.map(Text::from);
         assert_eq!(
@@ -564,6 +597,7 @@ fn f4_a_fault_before_open_or_on_entry_0_costs_the_rest_of_its_container() {
         }
     );
     assert_eq!(header.resume_after(), Some(EntryPath::from([2])));
+    assert_eq!(header.outcome_entry(), EntryPath::from([2, 2]));
     let crash = NotCheckedReason::Fault(FaultKind::Crash);
     assert_eq!(
         header.outcome(crash),
@@ -577,6 +611,7 @@ fn f4_a_fault_before_open_or_on_entry_0_costs_the_rest_of_its_container() {
     let inside = fault_scope(&attributed, true);
     assert_eq!(inside, FaultScope::Entry(EntryPath::from([2, 2])));
     assert_eq!(inside.resume_after(), Some(EntryPath::from([2, 2])));
+    assert_eq!(inside.outcome_entry(), EntryPath::from([2, 2]));
     assert_eq!(
         inside.outcome(crash),
         FileOutcome::NotChecked {
@@ -613,6 +648,10 @@ fn f4_a_fault_before_open_or_on_entry_0_costs_the_rest_of_its_container() {
 #[test]
 fn f5_exits_are_classified_per_os_and_the_memory_cap_has_its_own_code() {
     let crash = ExitClass::Fault(FaultKind::Crash);
+    let raw = |raw| WorkerExit {
+        raw,
+        killed_by_parent: false,
+    };
     for (platform, exit, class) in [
         (Platform::Unix, RawExit::Signal(11), crash),
         (Platform::Unix, RawExit::Signal(6), crash),
@@ -664,18 +703,44 @@ fn f5_exits_are_classified_per_os_and_the_memory_cap_has_its_own_code() {
         ),
     ] {
         assert_eq!(
-            classify_exit(platform, exit),
+            classify_exit(platform, raw(exit)),
             class,
             "{platform:?} {exit:?}"
         );
     }
+    for platform in [Platform::Unix, Platform::Windows] {
+        for exit in [
+            RawExit::Signal(9),
+            RawExit::Code(1),
+            RawExit::Code(WORKER_MEMORY_CAP_EXIT),
+        ] {
+            let killed = WorkerExit {
+                raw: exit,
+                killed_by_parent: true,
+            };
+            let class = classify_exit(platform, killed);
+            assert_eq!(class, ExitClass::KilledByParent);
+            assert!(!class.is_fault());
+            assert_eq!(class.reason(), None);
+        }
+    }
+    assert_eq!(
+        ParentKill::Watchdog.reason(),
+        Some(NotCheckedReason::LimitExceeded(LimitName::Watchdog))
+    );
+    assert!(ParentKill::Watchdog.host_dependent());
+    assert_eq!(ParentKill::Cancel.reason(), None);
+    assert!(!ParentKill::Cancel.host_dependent());
     assert_eq!(
         ExitClass::WorkerMemoryCap.reason(),
-        NotCheckedReason::LimitExceeded(LimitName::WorkerMemoryCap)
+        Some(NotCheckedReason::LimitExceeded(LimitName::WorkerMemoryCap))
     );
     assert!(ExitClass::WorkerMemoryCap.host_dependent());
     assert!(!crash.host_dependent());
-    assert_eq!(crash.reason(), NotCheckedReason::Fault(FaultKind::Crash));
+    assert_eq!(
+        crash.reason(),
+        Some(NotCheckedReason::Fault(FaultKind::Crash))
+    );
     let names: Vec<serde_json::Value> = [
         FaultKind::Crash,
         FaultKind::Panic,
@@ -815,7 +880,7 @@ fn f7_guards_are_chains_from_the_opening_directive_to_the_branch_holding_the_cod
     let bad = Fact::GuardRegion {
         file_kind: FileKind::Source,
         location: common::location("src/a.c", 7, Scope::File),
-        region: RegionId(3),
+        region: RegionId(0),
         guards: vec![chain(&[(Directive::Else, true)])],
         end_line: 9,
     };
@@ -931,15 +996,20 @@ fn f8_each_fact_kind_has_its_scope_path_and_value_forms() {
 
 #[test]
 fn f9_coverage_lists_alternatives_each_needing_all_its_file_kinds() {
-    let coverage = RuleCoverage {
-        rule: RuleId::new("identity/needs-root").unwrap(),
-        file_kinds: vec![
-            vec![FileKind::Source, FileKind::Package].into(),
-            vec![FileKind::Binary].into(),
-        ]
-        .into(),
+    let rule = || RuleId::new("identity/needs-root").unwrap();
+    let alts = |list: Vec<Vec<FileKind>>| -> boxt_core::SortedVec<boxt_core::SortedVec<FileKind>> {
+        list.into_iter().map(Into::into).collect()
     };
-    let alternatives: Vec<Vec<FileKind>> = coverage.file_kinds.iter().map(|a| a.to_vec()).collect();
+    let coverage = RuleCoverage::new(
+        rule(),
+        alts(vec![
+            vec![FileKind::Source, FileKind::Package],
+            vec![FileKind::Binary],
+        ]),
+    )
+    .unwrap();
+    let alternatives: Vec<Vec<FileKind>> =
+        coverage.file_kinds().iter().map(|a| a.to_vec()).collect();
     assert_eq!(
         alternatives,
         vec![
@@ -957,6 +1027,34 @@ fn f9_coverage_lists_alternatives_each_needing_all_its_file_kinds() {
         json["file_kinds"],
         serde_json::json!([["source", "package"], ["binary"]])
     );
+    assert_eq!(
+        serde_json::from_value::<RuleCoverage>(json).unwrap(),
+        coverage
+    );
+
+    for (list, error) in [
+        (vec![vec![]], CoverageError::EmptyAlternative),
+        (
+            vec![vec![FileKind::Binary], vec![]],
+            CoverageError::EmptyAlternative,
+        ),
+        (
+            vec![vec![FileKind::Binary], vec![FileKind::Binary]],
+            CoverageError::DuplicateAlternative,
+        ),
+        (
+            vec![vec![FileKind::Binary, FileKind::Binary]],
+            CoverageError::DuplicateFileKind,
+        ),
+    ] {
+        assert_eq!(
+            RuleCoverage::new(rule(), alts(list.clone())),
+            Err(error),
+            "{list:?}"
+        );
+        let json = serde_json::json!({"rule": "identity/needs-root", "file_kinds": list});
+        assert!(serde_json::from_value::<RuleCoverage>(json).is_err());
+    }
 }
 
 #[test]
@@ -974,7 +1072,7 @@ fn f10_the_compile_database_is_a_setting_job_outside_the_run() {
             tree: 1,
         }),
     };
-    let job = settings.compile_database_job().unwrap();
+    let job = settings.compile_database_job().unwrap().unwrap();
     assert_eq!(job.kind, JobKind::CompileDatabase);
     assert_eq!(job.input.index, 1);
     assert_eq!(job.input.given, Text::from("/src/b"));
@@ -988,7 +1086,24 @@ fn f10_the_compile_database_is_a_setting_job_outside_the_run() {
 
     let mut out_of_range = settings.clone();
     out_of_range.compile_database.as_mut().unwrap().tree = 2;
-    assert_eq!(out_of_range.compile_database_job(), None);
+    assert_eq!(
+        out_of_range.compile_database_job(),
+        Err(CompileDatabaseError::TreeOutOfRange { tree: 2, inputs: 2 })
+    );
+    let mut none = settings.clone();
+    none.compile_database = None;
+    assert_eq!(none.compile_database_job(), Ok(None));
+    assert_eq!(
+        CompileDatabaseError::NotRead(NotCheckedReason::Unparseable).to_string(),
+        "the compile database could not be read (unparseable)"
+    );
+    assert_eq!(
+        CompileDatabaseError::NotRead(NotCheckedReason::LimitExceeded(
+            LimitName::EntryMessageBytes
+        ))
+        .to_string(),
+        "the compile database could not be read (limit_exceeded(entry_message_bytes))"
+    );
 
     let route_with_setting = Job {
         kind: JobKind::Route,
@@ -1166,8 +1281,373 @@ fn schema_versions_are_major_dot_minor() {
     assert_eq!(RULE_SCHEMA_VERSION, SchemaVersion::new(1, 0));
     let json = serde_json::to_value(Versions::CURRENT).unwrap();
     for (_, version) in json.as_object().unwrap() {
-        assert_eq!(version, &serde_json::json!({"major": 1, "minor": 0}));
+        assert_eq!(version, &serde_json::json!("1.0"));
     }
     assert!(RULE_SCHEMA_VERSION.accepts("1.4".parse().unwrap()));
     assert!(!RULE_SCHEMA_VERSION.accepts("2.0".parse().unwrap()));
+}
+
+#[test]
+fn f8_validate_uses_the_row_for_the_facts_file_kind() {
+    let binary_string = |scope: Scope, line| Fact::StringLiteral {
+        file_kind: FileKind::Binary,
+        location: common::location_at(Some("usr/bin/app"), line, scope),
+        value: Text::from("x"),
+        guards: vec![],
+    };
+    assert_eq!(binary_string(Scope::File, None).validate(), Ok(()));
+    assert_eq!(
+        binary_string(common::function_scope(), Some(5)).validate(),
+        Err(FactError::ScopeNotAllowed {
+            kind: FactKind::StringLiteral,
+            scope: ScopeKind::Function,
+        })
+    );
+    assert_eq!(
+        binary_string(Scope::File, Some(5)).validate(),
+        Err(FactError::LineNotAllowed {
+            kind: FactKind::StringLiteral,
+            rule: LineRule::Absent,
+        })
+    );
+    let mut no_line = sample_fact(FactKind::Call);
+    if let Fact::Call { location, .. } = &mut no_line {
+        location.line = None;
+    }
+    assert_eq!(
+        no_line.validate(),
+        Err(FactError::LineNotAllowed {
+            kind: FactKind::Call,
+            rule: LineRule::Required,
+        })
+    );
+}
+
+#[test]
+fn f8_scope_text_script_format_and_guard_regions_match_the_fact() {
+    let mismatched_symbol = Fact::Import {
+        file_kind: FileKind::Binary,
+        location: common::location_at(
+            Some("usr/bin/app"),
+            None,
+            Scope::Symbol(Text::from("dlsym")),
+        ),
+        symbol: Text::from("dlopen"),
+        version: None,
+    };
+    let mismatched_key = Fact::ConfigKey {
+        file_kind: FileKind::Config,
+        location: common::location("etc/a.ini", 1, Scope::ConfigKey(Text::from("a.b"))),
+        key: Text::from("a.c"),
+        value: None,
+    };
+    let mismatched_unit = Fact::ServiceSetting {
+        file_kind: FileKind::Service,
+        location: common::location(
+            "app.service",
+            2,
+            Scope::UnitSection {
+                section: Text::from("Service"),
+                key: Text::from("User"),
+            },
+        ),
+        section: Text::from("Service"),
+        key: Text::from("Group"),
+        value: Text::from("app"),
+    };
+    for (fact, kind) in [
+        (mismatched_symbol, FactKind::Import),
+        (mismatched_key, FactKind::ConfigKey),
+        (mismatched_unit, FactKind::ServiceSetting),
+    ] {
+        assert_eq!(
+            fact.validate(),
+            Err(FactError::ScopeDiffersFromFields { kind })
+        );
+    }
+
+    let script = |format: FrameKind, name: ScriptName| Fact::PackageScript {
+        file_kind: FileKind::Package,
+        location: Location::frame(
+            input(),
+            vec![Frame {
+                kind: format,
+                name: Text::from("app"),
+            }],
+        )
+        .at(None, Scope::Script(name)),
+        name,
+        interpreter: None,
+    };
+    assert_eq!(
+        script(FrameKind::Rpm, ScriptName::Verify).validate(),
+        Ok(())
+    );
+    assert_eq!(
+        script(FrameKind::Deb, ScriptName::Config).validate(),
+        Ok(())
+    );
+    for (format, name) in [
+        (FrameKind::Rpm, ScriptName::Config),
+        (FrameKind::Deb, ScriptName::Verify),
+        (FrameKind::Archive, ScriptName::PostInstall),
+    ] {
+        assert_eq!(
+            script(format, name).validate(),
+            Err(FactError::ScriptNameNotForFormat {
+                kind: FactKind::PackageScript
+            }),
+            "{format:?} {name:?}"
+        );
+    }
+
+    let mut frameless = sample_fact(FactKind::PackageFile);
+    if let Fact::PackageFile { location, .. } = &mut frameless {
+        location.frames.clear();
+    }
+    assert_eq!(
+        frameless.validate(),
+        Err(FactError::NoFrame {
+            kind: FactKind::PackageFile
+        })
+    );
+
+    let region = |guards: Vec<GuardChain>, region, line, end_line| Fact::GuardRegion {
+        file_kind: FileKind::Source,
+        location: common::location("src/a.c", line, Scope::File),
+        region,
+        guards,
+        end_line,
+    };
+    let chains = common::guards();
+    let last = chains.last().unwrap().region;
+    assert_eq!(region(chains.clone(), last, 3, 3).validate(), Ok(()));
+    assert_eq!(
+        region(vec![], last, 3, 4).validate(),
+        Err(FactError::GuardRegion(GuardRegionError::NoGuards))
+    );
+    assert_eq!(
+        region(chains.clone(), last, 5, 4).validate(),
+        Err(FactError::GuardRegion(GuardRegionError::EndBeforeLine))
+    );
+    assert_eq!(
+        region(chains, RegionId(last.0 + 1), 3, 4).validate(),
+        Err(FactError::GuardRegion(GuardRegionError::RegionMismatch))
+    );
+}
+
+#[test]
+fn worker_outcomes_and_regions_are_checked_by_the_collector() {
+    let at = |file: FileOutcome| Outcome::new(file, Some(FileKind::Source));
+    let aggregate = |count, at_least| {
+        at(FileOutcome::Aggregate {
+            reason: NotCheckedReason::LimitExceeded(LimitName::TotalEntries),
+            count,
+            at_least,
+        })
+    };
+    let child = EntryPath::from([2, 3]);
+    assert_eq!(at(FileOutcome::Read).validate_from_worker(&child), Ok(()));
+    assert_eq!(aggregate(Some(5), 5).validate_from_worker(&child), Ok(()));
+    assert_eq!(aggregate(None, 0).validate_from_worker(&child), Ok(()));
+    let marked = Outcome {
+        host_dependent: true,
+        ..at(FileOutcome::Read)
+    };
+    for (outcome, entry, error) in [
+        (
+            at(FileOutcome::OutOfScope {
+                cause: boxt_core::outcome::OutOfScopeCause::OwnFile(
+                    boxt_core::outcome::OwnFileRole::Output,
+                ),
+            }),
+            child.clone(),
+            OutcomeError::OutOfScope,
+        ),
+        (
+            at(FileOutcome::NotChecked {
+                reason: NotCheckedReason::NotInCompileDatabase,
+                details: Details::None,
+            }),
+            child.clone(),
+            OutcomeError::NotInCompileDatabase,
+        ),
+        (marked, child.clone(), OutcomeError::HostDependent),
+        (
+            aggregate(Some(0), 0),
+            child.clone(),
+            OutcomeError::EmptyCount,
+        ),
+        (
+            aggregate(Some(2), 3),
+            child.clone(),
+            OutcomeError::CountBelowAtLeast,
+        ),
+        (
+            aggregate(None, 1),
+            EntryPath::from([2, 0]),
+            OutcomeError::AggregateOnEntryZero,
+        ),
+    ] {
+        assert_eq!(
+            outcome.validate_from_worker(&entry),
+            Err(error),
+            "{error:?}"
+        );
+    }
+
+    let region = |first_line, last_line| Region {
+        first_line,
+        last_line,
+        reason: RegionReason::Unparseable,
+    };
+    assert_eq!(region(1, 1).validate(), Ok(()));
+    assert_eq!(region(3, 9).validate(), Ok(()));
+    assert_eq!(region(0, 2).validate(), Err(RegionError::LineZero));
+    assert_eq!(region(5, 4).validate(), Err(RegionError::Inverted));
+}
+
+#[test]
+fn counts_saturate_instead_of_overflowing() {
+    let huge = |reason| FileOutcome::Aggregate {
+        reason,
+        count: Some(u64::MAX),
+        at_least: u64::MAX,
+    };
+    let outcomes = [
+        huge(NotCheckedReason::RepeatedFault),
+        huge(NotCheckedReason::RepeatedFault),
+        FileOutcome::NotChecked {
+            reason: NotCheckedReason::NoReader,
+            details: Details::None,
+        },
+    ];
+    assert_eq!(
+        verdict_counts(&outcomes).not_checked,
+        Count::Exact(u64::MAX)
+    );
+    let source: Vec<Outcome> = outcomes
+        .iter()
+        .map(|f| Outcome::new(f.clone(), Some(FileKind::Source)))
+        .collect();
+    let share = sm3_share(source.iter().map(|o| (o, false))).unwrap();
+    assert_eq!((share.numerator, share.denominator), (u64::MAX, u64::MAX));
+}
+
+#[test]
+fn nested_budgets_start_with_fresh_work_and_bytes() {
+    let limits = Limits::default()
+        .with(LimitName::Work, 10)
+        .unwrap()
+        .with(LimitName::Memory, 100)
+        .unwrap();
+    let mut parent = WorkBudget::new(&limits);
+    parent.work(7).unwrap();
+    parent.buffer(60).unwrap();
+    let mut child = parent.nested().unwrap();
+    assert_eq!(child.work_done(), 0);
+    assert_eq!(child.buffered(), 0);
+    assert_eq!(child.work(10), Ok(()));
+    assert!(child.work(1).is_err());
+    assert_eq!(child.buffer(100), Ok(()));
+    assert_eq!(parent.work_done(), 7);
+}
+
+#[test]
+fn budgets_count_file_size_ratio_and_entries_per_job() {
+    let limits = Limits::default()
+        .with(LimitName::FileSize, 1000)
+        .unwrap()
+        .with(LimitName::DecompressionRatio, 10)
+        .unwrap()
+        .with(LimitName::TotalEntries, 3)
+        .unwrap();
+    let mut budget = WorkBudget::new(&limits);
+    assert_eq!(budget.file_size(1000), Ok(()));
+    assert_eq!(
+        budget.file_size(1001),
+        Err(Exceeded {
+            limit: LimitName::FileSize,
+            value: 1001,
+            max: 1000,
+        })
+    );
+
+    let mut stream = budget.decompression();
+    stream.consumed(1000);
+    assert_eq!(stream.produced(RATIO_FLOOR - 1), Ok(()));
+    assert_eq!(
+        stream.produced(1),
+        Err(Exceeded {
+            limit: LimitName::DecompressionRatio,
+            value: RATIO_FLOOR / 1000,
+            max: 10,
+        })
+    );
+    let mut fine = budget.decompression();
+    fine.consumed(RATIO_FLOOR);
+    assert_eq!(fine.produced(10 * RATIO_FLOOR), Ok(()));
+    assert_eq!(fine.ratio(), 10);
+    assert!(fine.produced(1).is_err());
+    let mut small = budget.decompression();
+    assert_eq!(small.produced(RATIO_FLOOR - 1), Ok(()));
+
+    assert_eq!(budget.entry(), Ok(()));
+    let mut nested = budget.nested().unwrap();
+    assert_eq!(nested.entries(), 1);
+    assert_eq!(nested.entry(), Ok(()));
+    assert_eq!(nested.entry(), Ok(()));
+    budget.absorb_entries(&nested);
+    assert_eq!(budget.entries(), 3);
+    assert_eq!(
+        budget.entry(),
+        Err(Exceeded {
+            limit: LimitName::TotalEntries,
+            value: 4,
+            max: 3,
+        })
+    );
+}
+
+#[test]
+fn decode_frame_survives_short_and_interrupted_reads() {
+    struct Trickle {
+        bytes: Vec<u8>,
+        at: usize,
+        interrupted: bool,
+    }
+    impl std::io::Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            if self.at == self.bytes.len() || buf.is_empty() {
+                return Ok(0);
+            }
+            buf[0] = self.bytes[self.at];
+            self.at += 1;
+            Ok(1)
+        }
+    }
+    let msgs = common::all_worker_msgs();
+    let mut bytes = Vec::new();
+    for msg in &msgs {
+        bytes.extend(encode_frame(msg, u64::from(u32::MAX)).unwrap());
+    }
+    let mut reader = Trickle {
+        bytes,
+        at: 0,
+        interrupted: false,
+    };
+    for msg in &msgs {
+        let decoded = decode_frame::<WorkerMsg, _>(&mut reader, u64::from(u32::MAX))
+            .unwrap()
+            .unwrap();
+        assert_eq!(&decoded.msg, msg);
+    }
+    assert_eq!(
+        decode_frame::<WorkerMsg, _>(&mut reader, u64::from(u32::MAX)),
+        Ok(None)
+    );
 }

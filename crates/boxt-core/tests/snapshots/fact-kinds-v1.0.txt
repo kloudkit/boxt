@@ -2,93 +2,69 @@ rule_schema_version: 1.0
 common: file_kind, location
 
 call
-  file_kinds: source
-  scopes: file, function
-  path: file
+  from source: scopes file, function; path file; line required
   fields: callee, args, guards
   shape: {file_kind: FileKind, location: Location, callee: string, args: [string], guards: [GuardChain]}
 
 include
-  file_kinds: source
-  scopes: file, function
-  path: file
+  from source: scopes file, function; path file; line required
   fields: target, system, guards
   shape: {file_kind: FileKind, location: Location, target: string, system: bool, guards: [GuardChain]}
 
 string_literal
-  file_kinds: source, binary
-  scopes: file, function
-  path: file
+  from source: scopes file, function; path file; line required
+  from binary: scopes file; path file; line absent
   fields: value, guards
   shape: {file_kind: FileKind, location: Location, value: string | {bytes_base64: string}, guards: [GuardChain]}
 
 config_key
-  file_kinds: config
-  scopes: config_key
-  path: file
+  from config: scopes config_key; path file; line required
   fields: key, value
   shape: {file_kind: FileKind, location: Location, key: string, value: string | null}
 
 guard_region
-  file_kinds: source
-  scopes: file, function
-  path: file
+  from source: scopes file, function; path file; line required
   fields: region, guards, end_line
   shape: {file_kind: FileKind, location: Location, region: u32, guards: [GuardChain], end_line: u32}
 
 import
-  file_kinds: binary
-  scopes: symbol
-  path: file
+  from binary: scopes symbol; path file; line absent
   fields: symbol, version
   shape: {file_kind: FileKind, location: Location, symbol: string, version: string | null}
 
 export
-  file_kinds: binary
-  scopes: symbol
-  path: file
+  from binary: scopes symbol; path file; line absent
   fields: symbol, version
   shape: {file_kind: FileKind, location: Location, symbol: string, version: string | null}
 
 needed_library
-  file_kinds: binary
-  scopes: file
-  path: file
+  from binary: scopes file; path file; line absent
   fields: name
   shape: {file_kind: FileKind, location: Location, name: string}
 
 package_file
-  file_kinds: package
-  scopes: file
-  path: frame
+  from package: scopes file; path frame; line absent
   fields: path, mode, user, group
   shape: {file_kind: FileKind, location: Location, path: PathText, mode: u32 | null, user: string | null, group: string | null}
 
 package_dependency
-  file_kinds: package
-  scopes: file
-  path: frame
+  from package: scopes file; path frame; line absent
   fields: name, constraint
   shape: {file_kind: FileKind, location: Location, name: string, constraint: string | null}
 
 package_script
-  file_kinds: package
-  scopes: script
-  path: frame
+  from package: scopes script; path frame; line absent
   fields: name, interpreter
   shape: {file_kind: FileKind, location: Location, name: ScriptName, interpreter: string | null}
 
 service_setting
-  file_kinds: service
-  scopes: unit_section
-  path: file
+  from service: scopes unit_section; path file; line required
   fields: section, key, value
   shape: {file_kind: FileKind, location: Location, section: string, key: string, value: string}
 
 shell_command
-  file_kinds: package, service
-  scopes: script, file
-  path: frame_for_scripts
+  from package: scopes script; path frame; line required
+  from service: scopes file; path file; line required
   fields: assignments, argv, redirections
   shape: {file_kind: FileKind, location: Location, assignments: [Assignment], argv: [string], redirections: [Redirection]}
 

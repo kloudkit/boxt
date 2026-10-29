@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fact::FileKind;
 use crate::limits::LimitName;
+use crate::message::EntryPath;
 use crate::settings::{Encoding, PathPattern};
 use crate::text::Text;
 
@@ -14,7 +15,61 @@ pub struct Outcome {
     pub host_dependent: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutcomeError {
+    OutOfScope,
+    NotInCompileDatabase,
+    HostDependent,
+    EmptyCount,
+    CountBelowAtLeast,
+    AggregateOnEntryZero,
+}
+
+impl fmt::Display for OutcomeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            OutcomeError::OutOfScope => "a worker may not send an out-of-scope outcome",
+            OutcomeError::NotInCompileDatabase => {
+                "a worker may not send a not-in-compile-database outcome"
+            }
+            OutcomeError::HostDependent => "a worker may not mark an outcome host-dependent",
+            OutcomeError::EmptyCount => "an aggregate's count is 0",
+            OutcomeError::CountBelowAtLeast => "an aggregate's count is below its at_least",
+            OutcomeError::AggregateOnEntryZero => "an aggregate sits on a container's entry 0",
+        })
+    }
+}
+
+impl std::error::Error for OutcomeError {}
+
 impl Outcome {
+    pub fn validate_from_worker(&self, entry: &EntryPath) -> Result<(), OutcomeError> {
+        if self.host_dependent {
+            return Err(OutcomeError::HostDependent);
+        }
+        match &self.file {
+            FileOutcome::OutOfScope { .. } => Err(OutcomeError::OutOfScope),
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::NotInCompileDatabase,
+                ..
+            }
+            | FileOutcome::Aggregate {
+                reason: NotCheckedReason::NotInCompileDatabase,
+                ..
+            } => Err(OutcomeError::NotInCompileDatabase),
+            FileOutcome::Aggregate { .. } if entry.last() == Some(0) => {
+                Err(OutcomeError::AggregateOnEntryZero)
+            }
+            FileOutcome::Aggregate { count: Some(0), .. } => Err(OutcomeError::EmptyCount),
+            FileOutcome::Aggregate {
+                count: Some(n),
+                at_least,
+                ..
+            } if n < at_least => Err(OutcomeError::CountBelowAtLeast),
+            _ => Ok(()),
+        }
+    }
+
     pub fn new(file: FileOutcome, file_kind: Option<FileKind>) -> Self {
         Outcome {
             file,
@@ -157,15 +212,17 @@ where
     let mut bounded = false;
     for outcome in outcomes {
         match outcome {
-            FileOutcome::Read => read += 1,
-            FileOutcome::NotChecked { .. } => not_checked += 1,
-            FileOutcome::Aggregate { count: Some(n), .. } => not_checked += n,
+            FileOutcome::Read => read = read.saturating_add(1),
+            FileOutcome::NotChecked { .. } => not_checked = not_checked.saturating_add(1),
+            FileOutcome::Aggregate { count: Some(n), .. } => {
+                not_checked = not_checked.saturating_add(*n);
+            }
             FileOutcome::Aggregate {
                 count: None,
                 at_least,
                 ..
             } => {
-                not_checked += (*at_least).max(1);
+                not_checked = not_checked.saturating_add((*at_least).max(1));
                 bounded = true;
             }
             FileOutcome::OutOfScope { .. } => {}
@@ -213,9 +270,9 @@ where
                 count, at_least, ..
             } => (count.unwrap_or((*at_least).max(1)), true),
         };
-        denominator += n;
+        denominator = denominator.saturating_add(n);
         if hit {
-            numerator += n;
+            numerator = numerator.saturating_add(n);
         }
     }
     (denominator > 0).then_some(Sm3 {

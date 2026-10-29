@@ -4,6 +4,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct SchemaVersion {
     pub major: u32,
     pub minor: u32,
@@ -50,6 +51,20 @@ impl FromStr for SchemaVersion {
     fn from_str(s: &str) -> Result<Self, SchemaVersionError> {
         let (major, minor) = s.split_once('.').ok_or(SchemaVersionError)?;
         Ok(SchemaVersion::new(part(major)?, part(minor)?))
+    }
+}
+
+impl TryFrom<String> for SchemaVersion {
+    type Error = SchemaVersionError;
+
+    fn try_from(s: String) -> Result<Self, SchemaVersionError> {
+        s.parse()
+    }
+}
+
+impl From<SchemaVersion> for String {
+    fn from(v: SchemaVersion) -> String {
+        v.to_string()
     }
 }
 
@@ -108,5 +123,17 @@ mod tests {
         assert!(!loader.accepts(SchemaVersion::new(2, 0)));
         assert!(SchemaVersion::new(1, 9) < SchemaVersion::new(2, 0));
         assert!(SchemaVersion::new(1, 2) < SchemaVersion::new(1, 10));
+    }
+
+    #[test]
+    fn versions_serialize_as_major_dot_minor_strings() {
+        let v = SchemaVersion::new(1, 10);
+        assert_eq!(serde_json::to_string(&v).unwrap(), r#""1.10""#);
+        assert_eq!(
+            serde_json::from_str::<SchemaVersion>(r#""1.10""#).unwrap(),
+            v
+        );
+        assert!(serde_json::from_str::<SchemaVersion>(r#""1""#).is_err());
+        assert!(serde_json::from_str::<SchemaVersion>(r#"{"major":1,"minor":0}"#).is_err());
     }
 }

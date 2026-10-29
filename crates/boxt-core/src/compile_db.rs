@@ -51,17 +51,48 @@ pub fn classify(file_name: &[u8]) -> CxxClass {
 pub enum CompileDatabaseError {
     NotRead(NotCheckedReason),
     MatchesNoFile,
+    TreeOutOfRange { tree: u32, inputs: u64 },
+}
+
+fn reason_name(reason: NotCheckedReason) -> String {
+    match serde_json::to_value(reason) {
+        Ok(serde_json::Value::String(name)) => name,
+        Ok(serde_json::Value::Object(map)) => map
+            .into_iter()
+            .map(|(variant, value)| match value {
+                serde_json::Value::String(inner) => format!("{variant}({inner})"),
+                serde_json::Value::Object(inner) => {
+                    let parts: Vec<String> = inner
+                        .into_iter()
+                        .map(|(k, v)| match v {
+                            serde_json::Value::String(v) => format!("{k}({v})"),
+                            _ => k,
+                        })
+                        .collect();
+                    format!("{variant}({})", parts.join(", "))
+                }
+                _ => variant,
+            })
+            .collect(),
+        _ => String::from("unknown"),
+    }
 }
 
 impl fmt::Display for CompileDatabaseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CompileDatabaseError::NotRead(reason) => {
-                write!(f, "the compile database could not be read ({reason:?})")
-            }
+            CompileDatabaseError::NotRead(reason) => write!(
+                f,
+                "the compile database could not be read ({})",
+                reason_name(*reason)
+            ),
             CompileDatabaseError::MatchesNoFile => {
                 f.write_str("the compile database matches no file in its tree")
             }
+            CompileDatabaseError::TreeOutOfRange { tree, inputs } => write!(
+                f,
+                "the compile database names input {tree}, but there are only {inputs} inputs"
+            ),
         }
     }
 }

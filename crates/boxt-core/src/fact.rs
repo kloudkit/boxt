@@ -229,7 +229,6 @@ closed_enum! {
     pub enum PathRule {
         File,
         Frame,
-        FrameForScripts,
     }
 }
 
@@ -238,144 +237,197 @@ impl PathRule {
         match self {
             PathRule::File => "file",
             PathRule::Frame => "frame",
-            PathRule::FrameForScripts => "frame_for_scripts",
         }
     }
+}
 
-    pub fn allows(self, has_path: bool, scope: ScopeKind) -> bool {
+closed_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum LineRule {
+        Required,
+        Absent,
+    }
+}
+
+impl LineRule {
+    pub const fn name(self) -> &'static str {
         match self {
-            PathRule::File => has_path,
-            PathRule::Frame => !has_path,
-            PathRule::FrameForScripts => has_path != (scope == ScopeKind::Script),
+            LineRule::Required => "required",
+            LineRule::Absent => "absent",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceRule {
+    pub file_kind: FileKind,
+    pub scopes: &'static [ScopeKind],
+    pub path: PathRule,
+    pub line: LineRule,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FactKindSpec {
     pub kind: FactKind,
     pub name: &'static str,
-    pub file_kinds: &'static [FileKind],
-    pub scopes: &'static [ScopeKind],
-    pub path: PathRule,
+    pub sources: &'static [SourceRule],
     pub fields: &'static [&'static str],
 }
 
 pub const COMMON_FIELDS: &[&str] = &["file_kind", "location"];
 
-const SOURCE: &[FileKind] = &[FileKind::Source];
-const BINARY: &[FileKind] = &[FileKind::Binary];
-const PACKAGE: &[FileKind] = &[FileKind::Package];
-const SERVICE: &[FileKind] = &[FileKind::Service];
-const CONFIG: &[FileKind] = &[FileKind::Config];
-
 const IN_CODE: &[ScopeKind] = &[ScopeKind::File, ScopeKind::Function];
 const FILE: &[ScopeKind] = &[ScopeKind::File];
 const SYMBOL: &[ScopeKind] = &[ScopeKind::Symbol];
+const SCRIPT: &[ScopeKind] = &[ScopeKind::Script];
+
+const fn row(
+    file_kind: FileKind,
+    scopes: &'static [ScopeKind],
+    path: PathRule,
+    line: LineRule,
+) -> SourceRule {
+    SourceRule {
+        file_kind,
+        scopes,
+        path,
+        line,
+    }
+}
+
+const SOURCE_CODE: &[SourceRule] = &[row(
+    FileKind::Source,
+    IN_CODE,
+    PathRule::File,
+    LineRule::Required,
+)];
+const BINARY_SYMBOL: &[SourceRule] = &[row(
+    FileKind::Binary,
+    SYMBOL,
+    PathRule::File,
+    LineRule::Absent,
+)];
+const PACKAGE_HEADER: &[SourceRule] = &[row(
+    FileKind::Package,
+    FILE,
+    PathRule::Frame,
+    LineRule::Absent,
+)];
 
 pub const FACT_KINDS: &[FactKindSpec] = &[
     FactKindSpec {
         kind: FactKind::Call,
         name: "call",
-        file_kinds: SOURCE,
-        scopes: IN_CODE,
-        path: PathRule::File,
+        sources: SOURCE_CODE,
         fields: &["callee", "args", "guards"],
     },
     FactKindSpec {
         kind: FactKind::Include,
         name: "include",
-        file_kinds: SOURCE,
-        scopes: IN_CODE,
-        path: PathRule::File,
+        sources: SOURCE_CODE,
         fields: &["target", "system", "guards"],
     },
     FactKindSpec {
         kind: FactKind::StringLiteral,
         name: "string_literal",
-        file_kinds: &[FileKind::Source, FileKind::Binary],
-        scopes: IN_CODE,
-        path: PathRule::File,
+        sources: &[
+            row(
+                FileKind::Source,
+                IN_CODE,
+                PathRule::File,
+                LineRule::Required,
+            ),
+            row(FileKind::Binary, FILE, PathRule::File, LineRule::Absent),
+        ],
         fields: &["value", "guards"],
     },
     FactKindSpec {
         kind: FactKind::ConfigKey,
         name: "config_key",
-        file_kinds: CONFIG,
-        scopes: &[ScopeKind::ConfigKey],
-        path: PathRule::File,
+        sources: &[row(
+            FileKind::Config,
+            &[ScopeKind::ConfigKey],
+            PathRule::File,
+            LineRule::Required,
+        )],
         fields: &["key", "value"],
     },
     FactKindSpec {
         kind: FactKind::GuardRegion,
         name: "guard_region",
-        file_kinds: SOURCE,
-        scopes: IN_CODE,
-        path: PathRule::File,
+        sources: SOURCE_CODE,
         fields: &["region", "guards", "end_line"],
     },
     FactKindSpec {
         kind: FactKind::Import,
         name: "import",
-        file_kinds: BINARY,
-        scopes: SYMBOL,
-        path: PathRule::File,
+        sources: BINARY_SYMBOL,
         fields: &["symbol", "version"],
     },
     FactKindSpec {
         kind: FactKind::Export,
         name: "export",
-        file_kinds: BINARY,
-        scopes: SYMBOL,
-        path: PathRule::File,
+        sources: BINARY_SYMBOL,
         fields: &["symbol", "version"],
     },
     FactKindSpec {
         kind: FactKind::NeededLibrary,
         name: "needed_library",
-        file_kinds: BINARY,
-        scopes: FILE,
-        path: PathRule::File,
+        sources: &[row(
+            FileKind::Binary,
+            FILE,
+            PathRule::File,
+            LineRule::Absent,
+        )],
         fields: &["name"],
     },
     FactKindSpec {
         kind: FactKind::PackageFile,
         name: "package_file",
-        file_kinds: PACKAGE,
-        scopes: FILE,
-        path: PathRule::Frame,
+        sources: PACKAGE_HEADER,
         fields: &["path", "mode", "user", "group"],
     },
     FactKindSpec {
         kind: FactKind::PackageDependency,
         name: "package_dependency",
-        file_kinds: PACKAGE,
-        scopes: FILE,
-        path: PathRule::Frame,
+        sources: PACKAGE_HEADER,
         fields: &["name", "constraint"],
     },
     FactKindSpec {
         kind: FactKind::PackageScript,
         name: "package_script",
-        file_kinds: PACKAGE,
-        scopes: &[ScopeKind::Script],
-        path: PathRule::Frame,
+        sources: &[row(
+            FileKind::Package,
+            SCRIPT,
+            PathRule::Frame,
+            LineRule::Absent,
+        )],
         fields: &["name", "interpreter"],
     },
     FactKindSpec {
         kind: FactKind::ServiceSetting,
         name: "service_setting",
-        file_kinds: SERVICE,
-        scopes: &[ScopeKind::UnitSection],
-        path: PathRule::File,
+        sources: &[row(
+            FileKind::Service,
+            &[ScopeKind::UnitSection],
+            PathRule::File,
+            LineRule::Required,
+        )],
         fields: &["section", "key", "value"],
     },
     FactKindSpec {
         kind: FactKind::ShellCommand,
         name: "shell_command",
-        file_kinds: &[FileKind::Package, FileKind::Service],
-        scopes: &[ScopeKind::Script, ScopeKind::File],
-        path: PathRule::FrameForScripts,
+        sources: &[
+            row(
+                FileKind::Package,
+                SCRIPT,
+                PathRule::Frame,
+                LineRule::Required,
+            ),
+            row(FileKind::Service, FILE, PathRule::File, LineRule::Required),
+        ],
         fields: &["assignments", "argv", "redirections"],
     },
 ];
@@ -389,12 +441,15 @@ impl FactKind {
         self.spec().name
     }
 
-    pub fn file_kinds(self) -> &'static [FileKind] {
-        self.spec().file_kinds
+    pub fn file_kinds(self) -> Vec<FileKind> {
+        self.spec().sources.iter().map(|r| r.file_kind).collect()
     }
 
-    pub fn scopes(self) -> &'static [ScopeKind] {
-        self.spec().scopes
+    pub fn source(self, file_kind: FileKind) -> Option<&'static SourceRule> {
+        self.spec()
+            .sources
+            .iter()
+            .find(|r| r.file_kind == file_kind)
     }
 
     pub fn fields(self) -> &'static [&'static str] {
@@ -407,12 +462,24 @@ impl FactKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardRegionError {
+    NoGuards,
+    EndBeforeLine,
+    RegionMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FactError {
     FileKindNotAllowed { kind: FactKind, file_kind: FileKind },
     ScopeNotAllowed { kind: FactKind, scope: ScopeKind },
     PathNotAllowed { kind: FactKind, rule: PathRule },
+    LineNotAllowed { kind: FactKind, rule: LineRule },
+    NoFrame { kind: FactKind },
     LineZero { kind: FactKind },
+    ScopeDiffersFromFields { kind: FactKind },
     ScriptNameMismatch,
+    ScriptNameNotForFormat { kind: FactKind },
+    GuardRegion(GuardRegionError),
     Guard { kind: FactKind, error: GuardError },
 }
 
@@ -427,7 +494,7 @@ impl fmt::Display for FactError {
             ),
             FactError::ScopeNotAllowed { kind, scope } => write!(
                 f,
-                "fact kind {} may not have scope {}",
+                "fact kind {} may not have scope {} for its file kind",
                 kind.name(),
                 scope.name()
             ),
@@ -437,12 +504,34 @@ impl fmt::Display for FactError {
                 kind.name(),
                 rule.name()
             ),
+            FactError::LineNotAllowed { kind, rule } => write!(
+                f,
+                "fact kind {} breaks its line rule {}",
+                kind.name(),
+                rule.name()
+            ),
+            FactError::NoFrame { kind } => write!(
+                f,
+                "fact kind {} names its frame but its location has no frame",
+                kind.name()
+            ),
             FactError::LineZero { kind } => {
                 write!(f, "fact kind {} has line 0; lines are 1-based", kind.name())
             }
+            FactError::ScopeDiffersFromFields { kind } => write!(
+                f,
+                "fact kind {} has a scope that differs from its own fields",
+                kind.name()
+            ),
             FactError::ScriptNameMismatch => {
                 f.write_str("package_script name differs from its location's script scope")
             }
+            FactError::ScriptNameNotForFormat { kind } => write!(
+                f,
+                "fact kind {} names a script its package format does not have",
+                kind.name()
+            ),
+            FactError::GuardRegion(error) => write!(f, "guard_region: {error:?}"),
             FactError::Guard { kind, error } => write!(f, "fact kind {}: {error}", kind.name()),
         }
     }
@@ -523,32 +612,88 @@ impl Fact {
         }
     }
 
+    fn scope_matches_fields(&self) -> bool {
+        let scope = &self.location().scope;
+        match self {
+            Fact::Import { symbol, .. } | Fact::Export { symbol, .. } => {
+                matches!(scope, Scope::Symbol(s) if s == symbol)
+            }
+            Fact::ConfigKey { key, .. } => matches!(scope, Scope::ConfigKey(k) if k == key),
+            Fact::ServiceSetting { section, key, .. } => matches!(
+                scope,
+                Scope::UnitSection { section: s, key: k } if s == section && k == key
+            ),
+            _ => true,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), FactError> {
         let kind = self.kind();
-        let spec = kind.spec();
         let file_kind = self.file_kind();
-        if !spec.file_kinds.contains(&file_kind) {
-            return Err(FactError::FileKindNotAllowed { kind, file_kind });
-        }
+        let rule = kind
+            .source(file_kind)
+            .ok_or(FactError::FileKindNotAllowed { kind, file_kind })?;
         let location = self.location();
         let scope = location.scope.kind();
-        if !spec.scopes.contains(&scope) {
+        if !rule.scopes.contains(&scope) {
             return Err(FactError::ScopeNotAllowed { kind, scope });
         }
-        if !spec.path.allows(location.path.is_some(), scope) {
+        let path_ok = match rule.path {
+            PathRule::File => location.path.is_some(),
+            PathRule::Frame => location.path.is_none(),
+        };
+        if !path_ok {
             return Err(FactError::PathNotAllowed {
                 kind,
-                rule: spec.path,
+                rule: rule.path,
             });
         }
-        let end_zero = matches!(self, Fact::GuardRegion { end_line: 0, .. });
-        if location.line == Some(0) || end_zero {
+        if rule.path == PathRule::Frame && location.frames.is_empty() {
+            return Err(FactError::NoFrame { kind });
+        }
+        if location.line == Some(0) || matches!(self, Fact::GuardRegion { end_line: 0, .. }) {
             return Err(FactError::LineZero { kind });
+        }
+        let line_ok = match rule.line {
+            LineRule::Required => location.line.is_some(),
+            LineRule::Absent => location.line.is_none(),
+        };
+        if !line_ok {
+            return Err(FactError::LineNotAllowed {
+                kind,
+                rule: rule.line,
+            });
+        }
+        if !self.scope_matches_fields() {
+            return Err(FactError::ScopeDiffersFromFields { kind });
         }
         if let Fact::PackageScript { name, .. } = self
             && location.scope != Scope::Script(*name)
         {
             return Err(FactError::ScriptNameMismatch);
+        }
+        if let Scope::Script(name) = location.scope {
+            let format = location.frames.last().map(|f| f.kind);
+            if format.and_then(|f| name.native(f)).is_none() {
+                return Err(FactError::ScriptNameNotForFormat { kind });
+            }
+        }
+        if let Fact::GuardRegion {
+            region,
+            guards,
+            end_line,
+            ..
+        } = self
+        {
+            let last = guards
+                .last()
+                .ok_or(FactError::GuardRegion(GuardRegionError::NoGuards))?;
+            if location.line.is_some_and(|line| *end_line < line) {
+                return Err(FactError::GuardRegion(GuardRegionError::EndBeforeLine));
+            }
+            if last.region != *region {
+                return Err(FactError::GuardRegion(GuardRegionError::RegionMismatch));
+            }
         }
         for chain in self.guards() {
             chain

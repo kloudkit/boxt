@@ -172,12 +172,81 @@ pub struct Profile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+struct RawRuleCoverage {
+    rule: RuleId,
+    file_kinds: SortedVec<SortedVec<FileKind>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawRuleCoverage", into = "RawRuleCoverage")]
 pub struct RuleCoverage {
-    pub rule: RuleId,
-    pub file_kinds: SortedVec<SortedVec<FileKind>>,
+    rule: RuleId,
+    file_kinds: SortedVec<SortedVec<FileKind>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverageError {
+    EmptyAlternative,
+    DuplicateAlternative,
+    DuplicateFileKind,
+}
+
+impl fmt::Display for CoverageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            CoverageError::EmptyAlternative => "rule coverage has an empty alternative",
+            CoverageError::DuplicateAlternative => "rule coverage repeats an alternative",
+            CoverageError::DuplicateFileKind => "a coverage alternative repeats a file kind",
+        })
+    }
+}
+
+impl std::error::Error for CoverageError {}
+
+impl TryFrom<RawRuleCoverage> for RuleCoverage {
+    type Error = CoverageError;
+
+    fn try_from(raw: RawRuleCoverage) -> StdResult<Self, CoverageError> {
+        RuleCoverage::new(raw.rule, raw.file_kinds)
+    }
+}
+
+impl From<RuleCoverage> for RawRuleCoverage {
+    fn from(c: RuleCoverage) -> Self {
+        RawRuleCoverage {
+            rule: c.rule,
+            file_kinds: c.file_kinds,
+        }
+    }
 }
 
 impl RuleCoverage {
+    pub fn new(
+        rule: RuleId,
+        file_kinds: SortedVec<SortedVec<FileKind>>,
+    ) -> StdResult<Self, CoverageError> {
+        for alternative in file_kinds.iter() {
+            if alternative.is_empty() {
+                return Err(CoverageError::EmptyAlternative);
+            }
+            if alternative.windows(2).any(|w| w[0] == w[1]) {
+                return Err(CoverageError::DuplicateFileKind);
+            }
+        }
+        if file_kinds.windows(2).any(|w| w[0] == w[1]) {
+            return Err(CoverageError::DuplicateAlternative);
+        }
+        Ok(RuleCoverage { rule, file_kinds })
+    }
+
+    pub fn rule(&self) -> &RuleId {
+        &self.rule
+    }
+
+    pub fn file_kinds(&self) -> &SortedVec<SortedVec<FileKind>> {
+        &self.file_kinds
+    }
+
     pub fn can_fire(&self, read: &[FileKind]) -> bool {
         self.file_kinds
             .iter()

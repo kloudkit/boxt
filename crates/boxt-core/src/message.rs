@@ -124,6 +124,35 @@ pub struct Region {
     pub reason: RegionReason,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionError {
+    LineZero,
+    Inverted,
+}
+
+impl fmt::Display for RegionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            RegionError::LineZero => "a region starts on line 0; lines are 1-based",
+            RegionError::Inverted => "a region ends before it starts",
+        })
+    }
+}
+
+impl std::error::Error for RegionError {}
+
+impl Region {
+    pub fn validate(&self) -> Result<(), RegionError> {
+        if self.first_line == 0 {
+            return Err(RegionError::LineZero);
+        }
+        if self.last_line < self.first_line {
+            return Err(RegionError::Inverted);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Note {
@@ -541,30 +570,64 @@ pub enum RawExit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerExit {
+    pub raw: RawExit,
+    pub killed_by_parent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitClass {
     Fault(FaultKind),
     WorkerMemoryCap,
+    KilledByParent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentKill {
+    Watchdog,
+    Cancel,
+}
+
+impl ParentKill {
+    pub fn reason(self) -> Option<NotCheckedReason> {
+        match self {
+            ParentKill::Watchdog => Some(NotCheckedReason::LimitExceeded(LimitName::Watchdog)),
+            ParentKill::Cancel => None,
+        }
+    }
+
+    pub fn host_dependent(self) -> bool {
+        matches!(self, ParentKill::Watchdog)
+    }
 }
 
 impl ExitClass {
-    pub fn reason(self) -> NotCheckedReason {
+    pub fn reason(self) -> Option<NotCheckedReason> {
         match self {
-            ExitClass::Fault(kind) => NotCheckedReason::Fault(kind),
+            ExitClass::Fault(kind) => Some(NotCheckedReason::Fault(kind)),
             ExitClass::WorkerMemoryCap => {
-                NotCheckedReason::LimitExceeded(LimitName::WorkerMemoryCap)
+                Some(NotCheckedReason::LimitExceeded(LimitName::WorkerMemoryCap))
             }
+            ExitClass::KilledByParent => None,
         }
     }
 
     pub fn host_dependent(self) -> bool {
         matches!(self, ExitClass::WorkerMemoryCap)
     }
+
+    pub fn is_fault(self) -> bool {
+        matches!(self, ExitClass::Fault(_))
+    }
 }
 
 const NTSTATUS_ERROR: u32 = 0xC000_0000;
 
-pub fn classify_exit(platform: Platform, exit: RawExit) -> ExitClass {
-    match (platform, exit) {
+pub fn classify_exit(platform: Platform, exit: WorkerExit) -> ExitClass {
+    if exit.killed_by_parent {
+        return ExitClass::KilledByParent;
+    }
+    match (platform, exit.raw) {
         (_, RawExit::Signal(_)) => ExitClass::Fault(FaultKind::Crash),
         (_, RawExit::Code(WORKER_MEMORY_CAP_EXIT)) => ExitClass::WorkerMemoryCap,
         (_, RawExit::Code(PANIC_EXIT)) => ExitClass::Fault(FaultKind::Panic),

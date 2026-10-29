@@ -16,7 +16,8 @@ hand-written.
 - A `Vec` is positional: its order is the order of the thing it describes. A `SortedVec` is
   sorted by its element's `Ord`, which is derived, so the sort key is the element's field
   order, declared next to the element type. `SortedVec` sorts on construction and on
-  deserialization.
+  deserialization. It is a sorted list: it keeps duplicates, unless the type holding it
+  refuses them (`RuleCoverage`).
 
 | List | Order |
 | --- | --- |
@@ -32,7 +33,7 @@ hand-written.
 | `Settings.excludes` | as given |
 | `Settings.encodings`, `WorkerSettings.encodings` | as given; the first declaration that matches a path wins |
 | `Settings.targets`, `.ignored_macros` | sorted |
-| `RuleCoverage.file_kinds` | sorted alternatives, each a sorted set of `FileKind`s |
+| `RuleCoverage.file_kinds` | sorted alternatives, each a sorted list of `FileKind`s; `RuleCoverage` refuses an empty alternative and any duplicate |
 | each `SortedVec` field of `Profile`, `Control`, `Coverage` and `Result` | sorted |
 | a list inside an element of a sorted list (`Finding.guards`, `Finding.location.frames`) | its own order, from the rows above |
 
@@ -114,13 +115,20 @@ payload encoding behind `encode_frame` and `decode_frame`.
 
 ## Facts (AD-2, AD-18, RA2-H5, RA2-M5)
 
-- `Fact` is closed. Each kind declares in `FACT_KINDS` the `FileKind`s it may come from, the
-  scopes its location may have, its `PathRule`, and its field names. Every instance carries
-  its own `file_kind` and `location`.
-- The collector runs `Fact::validate` on every fact it receives. It refuses a `file_kind`,
-  a scope or a path the kind's row does not allow, line 0, a malformed guard chain, and a
-  `package_script` whose `name` differs from its scope. A fact that fails is
-  `Fault(BadFrame)` for the job, as if the frame had not decoded.
+- `Fact` is closed. Each kind declares in `FACT_KINDS` its field names and one
+  `SourceRule` row per `FileKind` it may come from: the scopes its location may have, its
+  `PathRule` and its `LineRule`. These rows are the table below. Every instance carries its
+  own `file_kind` and `location`.
+- The collector runs `Fact::validate` on every fact it receives. It takes the row for the
+  fact's `file_kind`, and refuses a `file_kind` with no row, a scope, path or line the row
+  does not allow, line 0, a `Frame` fact whose location has no frame, a scope whose text
+  differs from the fact's own fields (`Symbol` and `symbol` for `import` and `export`,
+  `ConfigKey` and `key`, `UnitSection` and `section`, `key`), a `package_script` whose
+  `name` differs from its scope, a `Script` scope whose `ScriptName` has no native name for
+  the innermost frame's kind (an RPM or DEB frame), a `guard_region` with no guards, with
+  `end_line` before its line, or whose `region` is not its last chain's, and a malformed
+  guard chain. A fact that fails is `Fault(BadFrame)` for the job, as if the frame had not
+  decoded.
 - Fact kinds name structure only (calls, keys, symbols, settings, commands). A behaviour
   such as a fixed user id, forking or dynamic loading is always a rule's output.
 - Dynamic loading is not a fact kind. `boxt-rules` derives `Observation::DynamicLoad` from
@@ -128,8 +136,10 @@ payload encoding behind `encode_frame` and `decode_frame`.
 
 ### Per-kind rules (S-F8)
 
-`PathRule::File`: `path` is the file's path in its innermost root. `Frame`: `path` is
-`None`. `FrameForScripts`: `None` with scope `Script`, a path with any other scope.
+Each row is one `SourceRule`. Path `file` is `PathRule::File`: `path` is the file's path in
+its innermost root. Path `frame` is `PathRule::Frame`: `path` is `None` and the location has
+at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
+`LineRule::Required`.
 
 | Kind | From | Scope | Path | Line | Value forms |
 | --- | --- | --- | --- | --- | --- |
@@ -176,13 +186,13 @@ payload encoding behind `encode_frame` and `decode_frame`.
 - Any change to a fact kind, a field, a table column or a type a fact holds bumps
   `RULE_SCHEMA_VERSION`: the minor for an added kind or field, the major for anything else.
   The `fact_kinds` test traces every fact kind through serde and compares the result
-  against `tests/snapshots/fact-kinds-v<RULE_SCHEMA_VERSION>.txt`: the table (file kinds,
-  scopes, path rule, fields), each kind's fields with their declared integer widths and
+  against `tests/snapshots/fact-kinds-v<RULE_SCHEMA_VERSION>.txt`: the table (one row per
+  file kind with its scopes, path rule and line rule, then the fields), each kind's fields with their declared integer widths and
   whether each may be null, every reachable type with every serialized variant name, and
   each named newtype (`PathText`). It holds no fixture values, and it fails on any
   difference.
 - Every unit enum a fact holds (`FileKind`, `Directive`, `FrameKind`, `RedirectOp`,
-  `ScriptName`), and `FactKind`, `ScopeKind`, `PathRule` and `LimitName`, is declared
+  `ScriptName`), and `FactKind`, `ScopeKind`, `PathRule`, `LineRule` and `LimitName`, is declared
   through the `closed_enum!` macro, which also generates its `ALL`; the traced fixtures are
   built from `ALL`, so a new variant reaches the snapshot without any test edit, and a test
   checks each `ALL` against serde's own variant table. `Scope` carries data: its fixtures
@@ -198,9 +208,13 @@ payload encoding behind `encode_frame` and `decode_frame`.
 `shell::lex` is the only shell lexer. Everything that meets a script uses it: the router for
 the install-script entries of an RPM or DEB frame, and the service reader for SysV init
 scripts. Each command becomes one `Fact::ShellCommand`, with the command's line in the
-`Location`. `is_shell_interpreter` decides whether a script is shell: no interpreter (the
-RPM default), or a first word, or the program after `env` and its options, whose file name
-is in `SHELL_INTERPRETERS` (`sh bash dash ash ksh mksh`). A script with any other
+`Location`. `is_shell_interpreter` decides whether a script is shell. It drops one trailing
+CR (a CRLF shebang). No interpreter, or a blank one, is the format's default shell. Otherwise
+the program is the first word, or for `env` the first word after its options and `NAME=value`
+words: `-u`/`--unset` and `-C`/`--chdir` take the next word as their argument, and
+`-S`/`--split-string` (or `-S<word>`) splits its argument into the words that follow. The
+script is shell when the program's file name is in `SHELL_INTERPRETERS` (`sh bash dash ash
+ksh mksh`). A script with any other
 interpreter is never lexed: it is `NotChecked` with `UnsupportedInterpreter` and
 `Details::Interpreter`.
 
@@ -270,20 +284,37 @@ scripts, and expands nothing.
   `Opened` for entry 0 and calls `own_facts`, then calls `next_entry` until it returns
   `None`.
 - An `Entry` has a raw `EntryName` (a path, or an install script with its interpreter), an
-  `EntryKind` and the entry's bytes as an `Input`: a stream, or a seekable reader where the
+  `EntryKind`, `size` and the entry's bytes as an `Input`. `size` is the entry's
+  uncompressed size as its container header states it, or `None` when the header gives
+  none; it is a claim, never trusted: the router checks it with `file_size` before reading,
+  and counts the bytes it actually reads. The `Input` is a stream, or a seekable reader where the
   container can give one (a zip on a seekable outer input, or one buffered in memory). The
   router normalizes a path with `entry_path`, gives no index to a `Directory`, and gives a
   `Link` `NotChecked{Symlink(Unresolved)}` and a `Special` entry `NotChecked{SpecialFile}`;
   neither is followed or read.
 - `ReadCtx` holds the base `Location` of the file being read (input, frames, path; line
   `None`, scope `File`, or the script's scope), the `WorkerSettings`, and one `WorkBudget`.
-  Readers build each fact's location with `ctx.at(line, scope)`.
+  Readers build each fact's location with `ctx.at(line, scope)`. The budget is private: a
+  reader can only spend it, through `work`, `buffer`, `release`, `file_size`, `entry` and
+  `decompression`, and read it through `budget()`. Only the router builds a context with a
+  given budget (`with_budget`) and takes it back (`into_budget`).
 - `WorkBudget` counts against `Limits`: `work` steps (`Work`; tree-sitter steps through its
   progress callback), `buffer` and `release` for bytes held in memory (`Memory`, the counted
   per-file buffer), and depth. Each file and entry gets a fresh budget for work and bytes; a
   container's entries get `nested()`, one level deeper, which fails past `ArchiveDepth`. A
   value over its limit is `Exceeded{limit, value, max}`, which becomes
   `NotChecked{LimitExceeded(limit), Measured{value, limit: max}}`.
+- `file_size(size)` refuses a file or entry over `FileSize`, before any of it is read.
+- The decompression ratio is decompressed bytes over compressed bytes, per compressed
+  stream (a gzip, xz, bzip2 or zstd stream, a zip entry's deflate data). The reader takes
+  one `Decompression` per stream from `decompression()`, reports input with `consumed` and
+  output with `produced`. Once at least `RATIO_FLOOR` (1 MiB) was produced, every `produced`
+  call checks `produced > consumed × DecompressionRatio` and fails with the ratio rounded
+  down, so small streams never trip it and a bomb stops while it is being produced.
+- `entry()` counts each entry of a job against `TotalEntries`: a job is capped at the whole
+  run-wide limit inside its worker (AD-4); the run-wide cut itself stays the collector's.
+  `nested()` carries the job's count down, and the router hands it back up with
+  `absorb_entries(&child)` when a nested container ends.
 - `FactSink` takes facts, regions and notes. The router's sink charges the entry's
   `EntryBudget`; when it refuses, the reader stops and returns the `Exceeded` it got. A
   reader that stops for any reason returns `NotRead`, and the router discards what the
@@ -400,8 +431,13 @@ scripts, and expands nothing.
   ends the job. That is coarse, but no entry is read twice or skipped unreported.
 - A second fault in the same job makes the rest of it one
   `Aggregate{RepeatedFault, count: None}` at the second fault's attributed entry.
-- The fault's reason comes from `classify_exit(Platform, RawExit)`, or is
-  `Fault(BadFrame)` for a bad frame or fact. `FaultKind` holds only what every OS can tell:
+- The fault's reason comes from `classify_exit(Platform, WorkerExit{raw, killed_by_parent})`,
+  or is `Fault(BadFrame)` for a bad frame, fact, outcome or region. When the parent killed
+  the worker itself (the watchdog, or a cancel), it sets `killed_by_parent`, and the class is
+  `KilledByParent` whatever the raw exit (a `SIGKILL` or a `TerminateProcess` code): it is
+  never a fault and never costs the job's retry. The collector maps it with `ParentKill`:
+  `Watchdog` is `LimitExceeded(Watchdog)`, marked `host_dependent`, and goes to the
+  watchdog retry below; `Cancel` records nothing. `FaultKind` holds only what every OS can tell:
   `Crash` (a signal on Unix, an NTSTATUS error code on Windows: segfault, abort and stack
   overflow all look alike), `Panic` (exit code 101, a panic that escaped the worker's own
   catch), `BadFrame` and `Exited` (any other exit before `JobDone`, 0 included).
@@ -418,6 +454,12 @@ scripts, and expands nothing.
 
 - Every file and every container entry gets exactly one outcome. A container counts once,
   through its entry 0; `JobDone{None}` adds nothing.
+- The collector checks every outcome and region a worker sends. `Outcome::validate_from_worker`
+  refuses `OutOfScope` and `NotInCompileDatabase` (only the collector makes those),
+  `host_dependent: true` (only the collector marks it), an `Aggregate` with `count: Some(n)`
+  where `n` is 0 or below `at_least`, and an `Aggregate` on a container's entry 0.
+  `Region::validate` refuses `first_line` 0 and `last_line` before `first_line`. A failure is
+  `Fault(BadFrame)` for the job, as for a fact.
 - `Outcome.file_kind` is the `FileKind` the router identified, from the entry's `Opened`,
   or `None` when no reader claimed the file. For a job that faulted before `Opened{[]}`,
   the collector sets it from the same routing decision it would make by name, and builds
@@ -436,6 +478,8 @@ scripts, and expands nothing.
   not checked are the `NotChecked` outcomes plus each `Aggregate`'s count. An `Aggregate`
   with no count adds `at_least`, never below 1, and makes the total `AtLeast`.
   `OutOfScope` adds nothing: it feeds only the FR-5 excluded-path counts.
+  Every sum in `verdict_counts` and `sm3_share` saturates at `u64::MAX` rather than
+  overflowing.
 - `sm3_share` counts files whose `file_kind` is `Source` (C/C++ in release 1), except
   `OutOfScope` ones and `NotInCompileDatabase` ones, as `NotChecked` or as `Aggregate`,
   which leave both counts. The
@@ -447,7 +491,8 @@ scripts, and expands nothing.
 
 - `Settings.compile_database` is a `CompileDatabaseSetting{file, tree}`: the database's path
   as the bin resolved it, and the index of the input whose source tree it limits.
-  `Settings::compile_database_job` builds its job. The collector dispatches it first and
+  `Settings::compile_database_job` builds its job: `Ok(None)` with no database, and
+  `Err(TreeOutOfRange)` when `tree` names no input, which is a typed run error. The collector dispatches it first and
   alone, before walking that tree.
 - The worker answers with one or more `CompileUnits`, holding each entry's `directory` and
   `file` as written and in the database's order, then `JobDone{Some(outcome)}`.
@@ -456,9 +501,11 @@ scripts, and expands nothing.
   `NotChecked` with `LimitExceeded(EntryMessageBytes)`.
 - That job's outcome never joins the run's outcomes and never counts on a verdict line.
   `CompileDatabaseError::check` turns it into the run's result: `Read` is fine, anything
-  else (`NotChecked`, an aggregate, a missing outcome, which is `Fault(BadFrame)`) is the
-  typed run error `NotRead(reason)`, and a database that matches no walked file is
-  `MatchesNoFile`. The bin maps both to exit 2 (FR-4).
+  else is the typed run error `NotRead(reason)`: `NotChecked` and an aggregate give their
+  own reason, and an `OutOfScope` outcome or a missing outcome, which a worker may not send
+  for this job, give `Fault(BadFrame)`. A database that matches no walked file is
+  `MatchesNoFile`. The bin maps all three to exit 2 (FR-4). The error prints each reason by
+  its serialized snake_case name.
 - The collector alone normalizes the units and matches them to walked paths.
   `SOURCE_EXTENSIONS` and `HEADER_EXTENSIONS` are the one extension table, matched ignoring
   ASCII case. `classify` takes the relative path, or the file name, of a file the router
@@ -488,8 +535,8 @@ scripts, and expands nothing.
 - `Settings` is built only by the bin. Path patterns keep their base and are never
   rewritten. A worker receives `Settings::worker()` and nothing else.
 - The rule-schema, profile-format, waiver-file, project-file and JSON-output versions are
-  the `SchemaVersion{major, minor}` constants in `version`, printed and parsed as
-  `major.minor`. An added field or kind bumps the minor; anything else bumps the major.
+  the `SchemaVersion{major, minor}` constants in `version`, printed, parsed and serialized
+  as the string `"major.minor"` (`"1.0"`). An added field or kind bumps the minor; anything else bumps the major.
   A loader at version `v` accepts a file at version `f` when `v.accepts(f)`, which holds
   for any minor of the same major. Every loader checks against them and every report
   states them through `Versions::CURRENT`. Story 6.8 owns the published policy.
@@ -501,8 +548,10 @@ scripts, and expands nothing.
   (`<dimension>/<name>`); user ids start with `user/`.
 - `Finding`, `Evidence`, `Observation`, `Coverage`, `Profile`, `Control` and `Result` live
   here. Their fields are minimal; later stories extend them.
-- `RuleCoverage.file_kinds` is a sorted set of alternatives, each a sorted set of
-  `FileKind`s that must all be read for the rule to fire. `can_fire(read)` is true when
+- `RuleCoverage.file_kinds` is a sorted list of alternatives, each a sorted list of
+  `FileKind`s that must all be read for the rule to fire. `RuleCoverage::new` and
+  deserialization refuse an empty alternative, a repeated alternative and a repeated
+  `FileKind` within one, so each is in effect a set. `can_fire(read)` is true when
   every kind of some alternative was read. A rule matching `all` of a source fact and a
   package fact has the one alternative `[source, package]`; one matching `any` of an
   import or a call has `[[source], [binary]]`.

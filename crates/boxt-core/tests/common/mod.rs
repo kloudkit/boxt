@@ -125,7 +125,13 @@ pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
     let some = |t: &str| filled.then(|| Text::from(t));
     let src = |line| location("src/main.c", line, function_scope());
     let script = Scope::Script(ScriptName::PostInstall);
-    let package = |scope: Scope| location_at(None, None, scope);
+    let package = |scope: Scope| Location {
+        frames: vec![Frame {
+            kind: FrameKind::Rpm,
+            name: Text::from("app"),
+        }],
+        ..location_at(None, None, scope)
+    };
     match kind {
         FactKind::Call => Fact::Call {
             file_kind: FileKind::Source,
@@ -160,7 +166,7 @@ pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
         FactKind::GuardRegion => Fact::GuardRegion {
             file_kind: FileKind::Source,
             location: src(9),
-            region: RegionId(1),
+            region: guards().last().unwrap().region,
             guards: guards(),
             end_line: 14,
         },
@@ -225,7 +231,10 @@ pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
         },
         FactKind::ShellCommand => Fact::ShellCommand {
             file_kind: FileKind::Package,
-            location: location_at(None, Some(2), script),
+            location: Location {
+                line: Some(2),
+                ..package(script)
+            },
             assignments: vec![Assignment {
                 name: Text::from("HOME"),
                 append: false,

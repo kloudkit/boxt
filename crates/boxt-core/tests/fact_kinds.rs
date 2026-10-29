@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use boxt_core::Text;
 use boxt_core::fact::{
-    COMMON_FIELDS, Directive, FACT_KINDS, Fact, FactError, FactKind, FileKind, PathRule,
+    COMMON_FIELDS, Directive, FACT_KINDS, Fact, FactError, FactKind, FileKind, LineRule, PathRule,
 };
 use boxt_core::limits::LimitName;
 use boxt_core::location::{FrameKind, Scope, ScopeKind, ScriptName};
@@ -24,9 +24,14 @@ fn table_is_in_enum_order() {
     for (spec, kind) in FACT_KINDS.iter().zip(FactKind::ALL) {
         assert_eq!(spec.kind, kind);
         assert_eq!(FactKind::from_name(spec.name), Some(kind));
-        assert!(!spec.file_kinds.is_empty(), "{}", spec.name);
-        let unique: BTreeSet<&FileKind> = spec.file_kinds.iter().collect();
-        assert_eq!(unique.len(), spec.file_kinds.len(), "{}", spec.name);
+        assert!(!spec.sources.is_empty(), "{}", spec.name);
+        let unique: BTreeSet<FileKind> = spec.sources.iter().map(|r| r.file_kind).collect();
+        assert_eq!(unique.len(), spec.sources.len(), "{}", spec.name);
+        assert!(
+            spec.sources.iter().all(|r| !r.scopes.is_empty()),
+            "{}",
+            spec.name
+        );
     }
 }
 
@@ -658,6 +663,13 @@ fn closed_enum_all_lists_every_variant() {
             Value::from(rule.name())
         );
     }
+    assert_eq!(unit_names(&LineRule::ALL), serde_variants::<LineRule>());
+    for rule in LineRule::ALL {
+        assert_eq!(
+            serde_json::to_value(rule).unwrap(),
+            Value::from(rule.name())
+        );
+    }
     assert_eq!(unit_names(&FrameKind::ALL), serde_variants::<FrameKind>());
     assert_eq!(unit_names(&RedirectOp::ALL), serde_variants::<RedirectOp>());
     assert_eq!(unit_names(&LimitName::ALL), serde_variants::<LimitName>());
@@ -680,13 +692,20 @@ fn render() -> String {
     writeln!(out, "rule_schema_version: {RULE_SCHEMA_VERSION}").unwrap();
     writeln!(out, "common: {}", COMMON_FIELDS.join(", ")).unwrap();
     for spec in FACT_KINDS {
-        let file_kinds: Vec<&str> = spec.file_kinds.iter().map(|k| k.name()).collect();
         writeln!(out).unwrap();
         writeln!(out, "{}", spec.name).unwrap();
-        let scopes: Vec<&str> = spec.scopes.iter().map(|k| k.name()).collect();
-        writeln!(out, "  file_kinds: {}", file_kinds.join(", ")).unwrap();
-        writeln!(out, "  scopes: {}", scopes.join(", ")).unwrap();
-        writeln!(out, "  path: {}", spec.path.name()).unwrap();
+        for rule in spec.sources {
+            let scopes: Vec<&str> = rule.scopes.iter().map(|k| k.name()).collect();
+            writeln!(
+                out,
+                "  from {}: scopes {}; path {}; line {}",
+                rule.file_kind.name(),
+                scopes.join(", "),
+                rule.path.name(),
+                rule.line.name()
+            )
+            .unwrap();
+        }
         writeln!(out, "  fields: {}", spec.fields.join(", ")).unwrap();
         let Some(Payload::Struct(fields)) =
             fact_variants.get(&(spec.kind as u32, spec.name.to_owned()))

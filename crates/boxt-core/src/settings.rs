@@ -2,6 +2,7 @@ use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
+use crate::compile_db::CompileDatabaseError;
 use crate::limits::Limits;
 use crate::location::InputRef;
 use crate::message::{Job, JobFile, JobKind};
@@ -63,10 +64,18 @@ impl Settings {
         }
     }
 
-    pub fn compile_database_job(&self) -> Option<Job> {
-        let setting = self.compile_database.as_ref()?;
-        let given = self.inputs.get(usize::try_from(setting.tree).ok()?)?;
-        Some(Job {
+    pub fn compile_database_job(&self) -> Result<Option<Job>, CompileDatabaseError> {
+        let Some(setting) = self.compile_database.as_ref() else {
+            return Ok(None);
+        };
+        let given = usize::try_from(setting.tree)
+            .ok()
+            .and_then(|i| self.inputs.get(i))
+            .ok_or(CompileDatabaseError::TreeOutOfRange {
+                tree: setting.tree,
+                inputs: self.inputs.len() as u64,
+            })?;
+        Ok(Some(Job {
             kind: JobKind::CompileDatabase,
             input: InputRef {
                 index: setting.tree,
@@ -74,7 +83,7 @@ impl Settings {
             },
             file: JobFile::Setting(setting.file.clone()),
             resume_after: None,
-        })
+        }))
     }
 }
 

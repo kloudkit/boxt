@@ -99,26 +99,56 @@ pub fn lex(text: &Text) -> Result<Vec<ShellCommand>, LexError> {
 pub const SHELL_INTERPRETERS: &[&str] = &["sh", "bash", "dash", "ash", "ksh", "mksh"];
 
 pub fn is_shell_interpreter(interpreter: Option<&Text>) -> bool {
-    let Some(interpreter) = interpreter else {
+    let line = interpreter.map_or(&b""[..], Text::as_bytes);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let blank = |c: &u8| *c == b' ' || *c == b'\t';
+    let words: Vec<&[u8]> = line.split(blank).filter(|w| !w.is_empty()).collect();
+    let base = |w: &[u8]| w.rsplit(|&c| c == b'/').next().unwrap_or(w).to_vec();
+    let Some(first) = words.first() else {
         return true;
     };
-    let mut words = interpreter
-        .as_bytes()
-        .split(|&c| c == b' ' || c == b'\t')
-        .filter(|w| !w.is_empty());
-    let base = |w: &[u8]| w.rsplit(|&c| c == b'/').next().unwrap_or(w).to_vec();
-    let Some(first) = words.next().map(base) else {
-        return false;
-    };
-    let program = if first == b"env" {
-        match words.find(|w| !w.starts_with(b"-")) {
-            Some(w) => base(w),
+    let program = if base(first) == b"env" {
+        match env_program(&words[1..]) {
+            Some(w) => base(&w),
             None => return false,
         }
     } else {
-        first
+        base(first)
     };
     SHELL_INTERPRETERS.iter().any(|s| s.as_bytes() == program)
+}
+
+fn is_env_assignment(arg: &[u8]) -> bool {
+    let Some(eq) = arg.iter().position(|&c| c == b'=') else {
+        return false;
+    };
+    let name = &arg[..eq];
+    name.first()
+        .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
+        && name.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+}
+
+fn env_program(args: &[&[u8]]) -> Option<Vec<u8>> {
+    let mut i = 0;
+    while let Some(&arg) = args.get(i) {
+        i += 1;
+        match arg {
+            b"-u" | b"--unset" | b"-C" | b"--chdir" => i += 1,
+            b"-S" | b"--split-string" => {
+                let rest = args.get(i..)?;
+                return env_program(rest);
+            }
+            _ if arg.starts_with(b"-S") => {
+                let mut split: Vec<&[u8]> = vec![&arg[2..]];
+                split.extend_from_slice(args.get(i..)?);
+                return env_program(&split);
+            }
+            _ if arg.starts_with(b"-") => {}
+            _ if is_env_assignment(arg) => {}
+            _ => return Some(arg.to_vec()),
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,7 +294,7 @@ impl<'a> Tokenizer<'a> {
         let c = self.peek(0)?;
         self.i += 1;
         if c == b'\n' {
-            self.line += 1;
+            self.line = self.line.saturating_add(1);
         }
         Some(c)
     }
@@ -276,7 +306,7 @@ impl<'a> Tokenizer<'a> {
             _ => return false,
         };
         self.i += len;
-        self.line += 1;
+        self.line = self.line.saturating_add(1);
         true
     }
 
@@ -315,7 +345,7 @@ impl<'a> Tokenizer<'a> {
                 b'\r' if self.peek(1) == Some(b'\n') => self.i += 1,
                 b'\n' => {
                     self.op(Op::Newline);
-                    self.line += 1;
+                    self.line = self.line.saturating_add(1);
                     self.read_heredoc_bodies()?;
                 }
                 b'#' => {
@@ -384,6 +414,9 @@ impl<'a> Tokenizer<'a> {
                         let fd = std::str::from_utf8(&word.bytes)
                             .ok()
                             .and_then(|s| s.parse().ok());
+                        if fd.is_none() {
+                            self.push_word(word);
+                        }
                         self.operator(fd);
                     } else {
                         self.push_word(word);
@@ -468,7 +501,7 @@ impl<'a> Tokenizer<'a> {
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let done = body == pending.delimiter.as_slice();
             if end < self.b.len() {
-                self.line += 1;
+                self.line = self.line.saturating_add(1);
             }
             self.i = next;
             if done {
@@ -488,8 +521,10 @@ impl<'a> Tokenizer<'a> {
             self.i += 1;
         }
         let mut delimiter = Vec::new();
+        let mut seen = false;
         while !self.word_end(0) {
             let Some(c) = self.peek(0) else { break };
+            seen = true;
             out.push(c);
             self.bump();
             match c {
@@ -511,7 +546,7 @@ impl<'a> Tokenizer<'a> {
                 _ => delimiter.push(c),
             }
         }
-        (!delimiter.is_empty()).then_some(PendingHeredoc {
+        seen.then_some(PendingHeredoc {
             delimiter,
             strip_tabs,
             line,
@@ -911,6 +946,11 @@ impl<'a> Tokenizer<'a> {
                         self.i += 1;
                     }
                 }
+                b'{' | b'!' if at_word_start && at_cmd_pos && self.word_end(1) => {
+                    out.push(c);
+                    self.i += 1;
+                    cmd_pos = true;
+                }
                 b'(' => {
                     if !pattern {
                         opens.push(self.i);
@@ -1262,6 +1302,51 @@ mod tests {
 
     fn lex_str(s: &str) -> Vec<ShellCommand> {
         lex(&Text::from(s)).unwrap()
+    }
+
+    #[test]
+    fn an_fd_too_large_for_u32_is_an_argument() {
+        let cmds = lex_str("echo 99999999999>f\n");
+        assert_eq!(argv(&cmds[0]), vec!["echo", "99999999999"]);
+        assert_eq!(
+            cmds[0].redirections,
+            vec![Redirection {
+                fd: None,
+                op: RedirectOp::Write,
+                target: Text::from("f"),
+            }]
+        );
+        let cmds = lex_str("echo 7>f\n");
+        assert_eq!(argv(&cmds[0]), vec!["echo"]);
+        assert_eq!(cmds[0].redirections[0].fd, Some(7));
+    }
+
+    #[test]
+    fn brace_and_bang_keep_command_position_inside_substitutions() {
+        for script in [
+            "x=$( { case a in a) echo hi;; esac; } )\n",
+            "x=$( ! case a in a) echo hi;; esac )\n",
+            "x=\"$( { case a in a) echo hi;; esac; } )\"\n",
+        ] {
+            let cmds = lex_str(script);
+            assert_eq!(cmds.len(), 1, "{script:?}");
+            assert!(cmds[0].argv.is_empty(), "{script:?}");
+            assert_eq!(cmds[0].assignments.len(), 1, "{script:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_heredoc_delimiter_inside_substitutions_is_registered() {
+        for script in [
+            "echo $(cat <<''\n) not code\n\n)\necho after\n",
+            "echo `cat <<''\n` not code\n\n`\necho after\n",
+        ] {
+            let cmds = lex_str(script);
+            let names: Vec<&str> = cmds.iter().map(|c| argv(c)[0]).collect();
+            assert_eq!(names, vec!["echo", "echo"], "{script:?}");
+            assert_eq!(argv(&cmds[1]), vec!["echo", "after"], "{script:?}");
+            assert_eq!(cmds[0].argv.len(), 2, "{script:?}");
+        }
     }
 
     fn argv(cmd: &ShellCommand) -> Vec<&str> {
