@@ -1590,9 +1590,9 @@ fn budgets_count_file_size_ratio_and_entries_per_job() {
 
     let mut stream = budget.decompression();
     stream.consumed(1000);
-    assert_eq!(budget.inflate(&mut stream, RATIO_FLOOR - 1), Ok(()));
+    assert_eq!(stream.produced(RATIO_FLOOR - 1), Ok(()));
     assert_eq!(
-        budget.inflate(&mut stream, 1),
+        stream.produced(1),
         Err(Exceeded {
             limit: LimitName::DecompressionRatio,
             value: RATIO_FLOOR / 1000,
@@ -1601,11 +1601,11 @@ fn budgets_count_file_size_ratio_and_entries_per_job() {
     );
     let mut fine = budget.decompression();
     fine.consumed(RATIO_FLOOR);
-    assert_eq!(budget.inflate(&mut fine, 10 * RATIO_FLOOR), Ok(()));
+    assert_eq!(fine.produced(10 * RATIO_FLOOR), Ok(()));
     assert_eq!(fine.ratio(), 10);
-    assert!(budget.inflate(&mut fine, 1).is_err());
+    assert!(fine.produced(1).is_err());
     let mut small = budget.decompression();
-    assert_eq!(budget.inflate(&mut small, RATIO_FLOOR - 1), Ok(()));
+    assert_eq!(small.produced(RATIO_FLOOR - 1), Ok(()));
 
     assert_eq!(budget.entry(), Ok(()));
     let mut nested = budget.nested().unwrap();
@@ -1614,17 +1614,16 @@ fn budgets_count_file_size_ratio_and_entries_per_job() {
     assert_eq!(nested.entry(), Ok(()));
     let mut tail = nested.decompression();
     tail.consumed(RATIO_FLOOR * 4);
-    assert_eq!(nested.inflate(&mut tail, 3 * RATIO_FLOOR), Ok(()));
-    budget.absorb(&nested);
+    assert_eq!(tail.produced(3 * RATIO_FLOOR), Ok(()));
     assert_eq!(budget.entries(), 3);
     let used = budget.decompressed();
     assert_eq!(used, 15 * RATIO_FLOOR);
     let mut last = budget.decompression();
     last.consumed(u64::MAX);
     let left = 40 * RATIO_FLOOR - used;
-    assert_eq!(budget.inflate(&mut last, left), Ok(()));
+    assert_eq!(last.produced(left), Ok(()));
     assert_eq!(
-        budget.inflate(&mut last, 1),
+        last.produced(1),
         Err(Exceeded {
             limit: LimitName::TotalDecompressedBytes,
             value: 40 * RATIO_FLOOR + 1,
@@ -1685,7 +1684,7 @@ fn decode_frame_survives_short_and_interrupted_reads() {
 }
 
 #[test]
-fn no_scope_text_or_setting_value_holds_a_carriage_return() {
+fn only_function_scope_text_refuses_a_carriage_return() {
     let setting = |value: &str| Fact::ServiceSetting {
         file_kind: FileKind::Service,
         location: common::location(
@@ -1701,12 +1700,7 @@ fn no_scope_text_or_setting_value_holds_a_carriage_return() {
         value: Text::from(value),
     };
     assert_eq!(setting("forking").validate(), Ok(()));
-    assert_eq!(
-        setting("forking\r").validate(),
-        Err(FactError::CarriageReturn {
-            kind: FactKind::ServiceSetting
-        })
-    );
+    assert_eq!(setting("forking\r").validate(), Ok(()));
     let key = |value: Option<&str>| Fact::ConfigKey {
         file_kind: FileKind::Config,
         location: common::location("etc/a.ini", 1, Scope::ConfigKey(Text::from("a.b"))),
@@ -1714,12 +1708,18 @@ fn no_scope_text_or_setting_value_holds_a_carriage_return() {
         value: value.map(Text::from),
     };
     assert_eq!(key(Some("1")).validate(), Ok(()));
-    assert_eq!(
-        key(Some("1\r")).validate(),
-        Err(FactError::CarriageReturn {
-            kind: FactKind::ConfigKey
-        })
-    );
+    assert_eq!(key(Some("1\r")).validate(), Ok(()));
+    let symbol = Fact::Import {
+        file_kind: FileKind::Binary,
+        location: common::location_at(
+            Some("usr/bin/app"),
+            None,
+            Scope::Symbol(Text::from("odd\rname")),
+        ),
+        symbol: Text::from("odd\rname"),
+        version: None,
+    };
+    assert_eq!(symbol.validate(), Ok(()));
     let call = |signature: &str| Fact::Call {
         file_kind: FileKind::Source,
         location: common::location(
@@ -1804,4 +1804,181 @@ fn collector_made_outcomes_take_the_key_of_the_first_file_they_cover() {
     };
     assert!(whole.is_well_formed());
     assert_eq!(whole.path().unwrap().as_bytes(), b"app.rpm");
+}
+
+struct Expand<R> {
+    inner: R,
+    byte: u8,
+    left: usize,
+}
+
+impl<R: std::io::Read> std::io::Read for Expand<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.left == 0 {
+            let mut one = [0u8; 1];
+            if self.inner.read(&mut one)? == 0 {
+                return Ok(0);
+            }
+            self.byte = one[0];
+            self.left = 64 * 1024;
+        }
+        let n = buf.len().min(self.left);
+        buf[..n].fill(self.byte);
+        self.left -= n;
+        Ok(n)
+    }
+}
+
+type Lazy = boxt_core::read::ChargedRead<Expand<boxt_core::read::CountedRead<Cursor<Vec<u8>>>>>;
+
+struct Compressed {
+    members: std::vec::IntoIter<Vec<u8>>,
+    current: Option<Lazy>,
+}
+
+impl Container for Compressed {
+    fn name(&self) -> Option<Text> {
+        None
+    }
+
+    fn own_facts(&mut self, _: &mut ReadCtx, _: &mut dyn FactSink) -> ReadResult {
+        Ok(())
+    }
+
+    fn next_entry(&mut self, ctx: &mut ReadCtx) -> ReadResult<Option<Entry<'_>>> {
+        let Some(member) = self.members.next() else {
+            return Ok(None);
+        };
+        let counted = boxt_core::read::CountedRead::new(Cursor::new(member));
+        let count = counted.count();
+        let expand = Expand {
+            inner: counted,
+            byte: 0,
+            left: 0,
+        };
+        self.current = Some(boxt_core::read::ChargedRead::new(
+            expand,
+            ctx.decompression(),
+            count,
+        ));
+        Ok(Some(Entry {
+            name: EntryName::Path(Text::from("member")),
+            kind: EntryKind::File,
+            size: None,
+            data: Input::Stream(self.current.as_mut().unwrap()),
+        }))
+    }
+}
+
+fn read_lazily(limits: &Limits, members: Vec<Vec<u8>>) -> Vec<Result<u64, Exceeded>> {
+    let mut ctx = ReadCtx::new(
+        Location::file(input(), vec![], RelPath::try_from("a.tgz").unwrap()),
+        limits,
+        None,
+    );
+    let mut container = Compressed {
+        members: members.into_iter(),
+        current: None,
+    };
+    let mut out = Vec::new();
+    while let Some(mut entry) = container.next_entry(&mut ctx).unwrap() {
+        let mut body = Vec::new();
+        out.push(
+            entry
+                .data
+                .reader()
+                .read_to_end(&mut body)
+                .map(|n| n as u64)
+                .map_err(|e| Exceeded::from_io(&e).expect("a limit")),
+        );
+    }
+    out
+}
+
+#[test]
+fn a_lazily_read_entry_charges_the_ratio_and_the_job_cap() {
+    let bomb = Limits::default()
+        .with(LimitName::DecompressionRatio, 100)
+        .unwrap();
+    let result = read_lazily(&bomb, vec![vec![b'a'; 40]]);
+    let Err(e) = result[0] else {
+        panic!("the ratio must trip: {result:?}");
+    };
+    assert_eq!(e.limit, LimitName::DecompressionRatio);
+    assert_eq!(e.max, 100);
+
+    let capped = Limits::default()
+        .with(LimitName::DecompressionRatio, 1_000_000)
+        .unwrap()
+        .with(LimitName::TotalDecompressedBytes, 3 * 64 * 1024)
+        .unwrap();
+    let result = read_lazily(&capped, vec![vec![b'a'; 2], vec![b'b'; 2]]);
+    assert_eq!(result[0], Ok(2 * 64 * 1024));
+    let Err(e) = result[1] else {
+        panic!("the job cap must trip on the second entry: {result:?}");
+    };
+    assert_eq!(e.limit, LimitName::TotalDecompressedBytes);
+    assert_eq!(e.max, 3 * 64 * 1024);
+}
+
+#[test]
+fn config_key_paths_are_joined_in_one_place() {
+    use boxt_core::fact::{KeySegment, config_key_path};
+    let name = |s: &str| KeySegment::Name(Text::from(s));
+    let attr = |s: &str| KeySegment::Attribute(Text::from(s));
+    for (segments, joined) in [
+        (vec![name("server"), name("port")], "server.port"),
+        (vec![name("a"), KeySegment::Index(0), name("b")], "a[0].b"),
+        (vec![name("a"), name("x.y"), name("c")], "a[\"x.y\"].c"),
+        (
+            vec![name("a"), KeySegment::Index(2), KeySegment::Index(1)],
+            "a[2][1]",
+        ),
+        (vec![KeySegment::Index(0), name("b")], "[0].b"),
+        (vec![name("x[1]")], "[\"x[1]\"]"),
+        (vec![name("line\r\nend")], "[\"line\\r\\nend\"]"),
+        (vec![name("q\"b\\")], "q\"b\\"),
+        (vec![name("q\"b.\\")], "[\"q\\\"b.\\\\\"]"),
+        (vec![name("bell\u{7}")], "[\"bell\\u0007\"]"),
+        (vec![name("server"), attr("port")], "server.@port"),
+        (vec![name("server"), attr("a.b")], "server[\"@a.b\"]"),
+        (vec![name("@lit")], "[\"@lit\"]"),
+        (vec![name("")], "[\"\"]"),
+        (vec![name("é")], "é"),
+        (vec![], ""),
+    ] {
+        assert_eq!(
+            config_key_path(&segments),
+            Text::from(joined),
+            "{segments:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cut_inside_a_container_sorts_after_the_entries_before_it() {
+    let path = RelPath::try_from("dist/app.tar").unwrap();
+    let job = Job {
+        kind: JobKind::Route,
+        input: input(),
+        file: JobFile::InInput(path.clone()),
+        resume_after: None,
+    };
+    let mut keys = [
+        CanonicalKey::at(0, path.clone(), EntryPath::from([2, 1])),
+        CanonicalKey::for_outcome(&job, &EntryPath::from([3])).unwrap(),
+        CanonicalKey::for_outcome(&job, &EntryPath::from([2, 0])).unwrap(),
+        CanonicalKey::for_outcome(&job, &EntryPath::from([1])).unwrap(),
+    ];
+    keys.sort();
+    let entries: Vec<&EntryPath> = keys.iter().map(|k| &k.entry).collect();
+    assert_eq!(
+        entries,
+        vec![
+            &EntryPath::from([1]),
+            &EntryPath::from([2, 0]),
+            &EntryPath::from([2, 1]),
+            &EntryPath::from([3])
+        ]
+    );
 }

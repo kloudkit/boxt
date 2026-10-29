@@ -1,4 +1,6 @@
-use std::io::{Read, Seek};
+use std::cell::Cell;
+use std::io::{self, Read, Seek};
+use std::rc::Rc;
 
 use crate::fact::{Fact, FileKind};
 use crate::limits::{LimitName, Limits};
@@ -13,6 +15,26 @@ pub struct Exceeded {
     pub limit: LimitName,
     pub value: u64,
     pub max: u64,
+}
+
+impl std::fmt::Display for Exceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "limit {} exceeded: {} over {}",
+            self.limit.flag(),
+            self.value,
+            self.max
+        )
+    }
+}
+
+impl std::error::Error for Exceeded {}
+
+impl Exceeded {
+    pub fn from_io(error: &io::Error) -> Option<Exceeded> {
+        error.get_ref()?.downcast_ref::<Exceeded>().copied()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,13 +80,25 @@ pub struct WorkBudget {
     max_depth: u64,
     max_file_size: u64,
     max_ratio: u64,
-    max_entries: u64,
-    max_decompressed: u64,
     work: u64,
     bytes: u64,
     depth: u64,
-    entries: u64,
-    decompressed: u64,
+    job: Rc<JobCounters>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct JobCounters {
+    max_entries: u64,
+    max_decompressed: u64,
+    entries: Cell<u64>,
+    decompressed: Cell<u64>,
+}
+
+fn charge_cell(limit: LimitName, total: &Cell<u64>, add: u64, max: u64) -> Result<(), Exceeded> {
+    let mut value = total.get();
+    let result = charge(limit, &mut value, add, max);
+    total.set(value);
+    result
 }
 
 pub const RATIO_FLOOR: u64 = 1024 * 1024;
@@ -74,6 +108,7 @@ pub struct Decompression {
     max_ratio: u64,
     compressed: u64,
     produced: u64,
+    job: Rc<JobCounters>,
 }
 
 impl Decompression {
@@ -81,7 +116,17 @@ impl Decompression {
         self.compressed = self.compressed.saturating_add(compressed);
     }
 
-    fn produced(&mut self, bytes: u64) -> Result<(), Exceeded> {
+    pub fn set_consumed(&mut self, compressed: u64) {
+        self.compressed = compressed;
+    }
+
+    pub fn produced(&mut self, bytes: u64) -> Result<(), Exceeded> {
+        charge_cell(
+            LimitName::TotalDecompressedBytes,
+            &self.job.decompressed,
+            bytes,
+            self.job.max_decompressed,
+        )?;
         self.produced = self.produced.saturating_add(bytes);
         if self.produced < RATIO_FLOOR {
             return Ok(());
@@ -121,28 +166,29 @@ impl WorkBudget {
             max_depth: limits.get(LimitName::ArchiveDepth),
             max_file_size: limits.get(LimitName::FileSize),
             max_ratio: limits.get(LimitName::DecompressionRatio),
-            max_entries: limits.get(LimitName::TotalEntries),
-            max_decompressed: limits.get(LimitName::TotalDecompressedBytes),
             work: 0,
             bytes: 0,
             depth: 0,
-            entries: 0,
-            decompressed: 0,
+            job: Rc::new(JobCounters {
+                max_entries: limits.get(LimitName::TotalEntries),
+                max_decompressed: limits.get(LimitName::TotalDecompressedBytes),
+                entries: Cell::new(0),
+                decompressed: Cell::new(0),
+            }),
         }
     }
 
-    pub fn inflate(&mut self, stream: &mut Decompression, bytes: u64) -> Result<(), Exceeded> {
-        charge(
-            LimitName::TotalDecompressedBytes,
-            &mut self.decompressed,
-            bytes,
-            self.max_decompressed,
-        )?;
-        stream.produced(bytes)
+    pub fn decompressed(&self) -> u64 {
+        self.job.decompressed.get()
     }
 
-    pub fn decompressed(&self) -> u64 {
-        self.decompressed
+    pub fn sibling(&self) -> WorkBudget {
+        WorkBudget {
+            work: 0,
+            bytes: 0,
+            job: Rc::clone(&self.job),
+            ..*self
+        }
     }
 
     pub fn file_size(&self, size: u64) -> Result<(), Exceeded> {
@@ -161,25 +207,21 @@ impl WorkBudget {
             max_ratio: self.max_ratio,
             compressed: 0,
             produced: 0,
+            job: Rc::clone(&self.job),
         }
     }
 
     pub fn entry(&mut self) -> Result<(), Exceeded> {
-        charge(
+        charge_cell(
             LimitName::TotalEntries,
-            &mut self.entries,
+            &self.job.entries,
             1,
-            self.max_entries,
+            self.job.max_entries,
         )
     }
 
-    pub fn absorb(&mut self, child: &WorkBudget) {
-        self.entries = self.entries.max(child.entries);
-        self.decompressed = self.decompressed.max(child.decompressed);
-    }
-
     pub fn entries(&self) -> u64 {
-        self.entries
+        self.job.entries.get()
     }
 
     pub fn work(&mut self, steps: u64) -> Result<(), Exceeded> {
@@ -201,6 +243,7 @@ impl WorkBudget {
             work: 0,
             bytes: 0,
             depth,
+            job: Rc::clone(&self.job),
             ..*self
         })
     }
@@ -267,10 +310,6 @@ impl ReadCtx {
 
     pub fn decompression(&self) -> Decompression {
         self.budget.decompression()
-    }
-
-    pub fn inflate(&mut self, stream: &mut Decompression, bytes: u64) -> Result<(), Exceeded> {
-        self.budget.inflate(stream, bytes)
     }
 
     pub fn entry(&mut self) -> Result<(), Exceeded> {
@@ -344,4 +383,73 @@ pub trait Container {
     fn name(&self) -> Option<Text>;
     fn own_facts(&mut self, ctx: &mut ReadCtx, sink: &mut dyn FactSink) -> ReadResult;
     fn next_entry(&mut self, ctx: &mut ReadCtx) -> ReadResult<Option<Entry<'_>>>;
+}
+
+pub type ByteCount = Rc<Cell<u64>>;
+
+pub struct CountedRead<R> {
+    inner: R,
+    count: ByteCount,
+}
+
+impl<R: Read> CountedRead<R> {
+    pub fn new(inner: R) -> Self {
+        CountedRead {
+            inner,
+            count: ByteCount::default(),
+        }
+    }
+
+    pub fn count(&self) -> ByteCount {
+        Rc::clone(&self.count)
+    }
+}
+
+impl<R: Read> Read for CountedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count.set(self.count.get().saturating_add(n as u64));
+        Ok(n)
+    }
+}
+
+pub struct ChargedRead<R> {
+    inner: R,
+    stream: Decompression,
+    compressed: ByteCount,
+    exceeded: Option<Exceeded>,
+}
+
+impl<R: Read> ChargedRead<R> {
+    pub fn new(inner: R, stream: Decompression, compressed: ByteCount) -> Self {
+        ChargedRead {
+            inner,
+            stream,
+            compressed,
+            exceeded: None,
+        }
+    }
+
+    pub fn exceeded(&self) -> Option<Exceeded> {
+        self.exceeded
+    }
+
+    pub fn stream(&self) -> &Decompression {
+        &self.stream
+    }
+}
+
+impl<R: Read> Read for ChargedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(e) = self.exceeded {
+            return Err(io::Error::other(e));
+        }
+        let n = self.inner.read(buf)?;
+        self.stream.set_consumed(self.compressed.get());
+        if let Err(e) = self.stream.produced(n as u64) {
+            self.exceeded = Some(e);
+            return Err(io::Error::other(e));
+        }
+        Ok(n)
+    }
 }

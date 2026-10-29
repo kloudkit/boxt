@@ -147,7 +147,7 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
 | `include` | source | as `call` | file | the directive's line | `target` without its delimiters; `system` is true for `<…>` |
 | `string_literal` | source | as `call` | file | the literal's first line | the literal's bytes with C escapes decoded, prefix and quotes dropped; adjacent literals stay separate facts |
 | `string_literal` | binary | `File` | file | none | each NUL-terminated run of at least 4 printable bytes (ASCII 0x20 to 0x7E) from the `.rodata` and `.data` sections only, without the NUL |
-| `config_key` | config | `ConfigKey(key)` | file | the key's line | `key` is the key's path, its segments joined with `.` (INI: `section.key`); a segment holding `.` or `[` is written `["…"]` with JSON string escaping, an array element is `[n]` (0-based), and an XML attribute is `@name`; `value` is the scalar as written after unquoting, `None` for a non-scalar |
+| `config_key` | config | `ConfigKey(key)` | file | the key's line | `key` is the key's path, its segments joined with `.` (INI: `section.key`); built only by `config_key_path`: a name segment that is empty, starts with `@`, or holds `.`, `[` or a control character (CR included) is written `["…"]` with JSON string escaping, an array element is `[n]` (0-based), and an XML attribute is `@name` (quoted as `["@…"]` by the same rule); `[n]` and `["…"]` attach to the segment before them with no dot, and a bare segment after any segment is preceded by `.` (`a[0].b`, `a["x.y"].c`); `value` is the scalar as written after unquoting, `None` for a non-scalar |
 | `guard_region` | source | as `call`, at the branch's directive | file | the branch's directive line | `end_line` is the line of the directive that ends the branch |
 | `import`, `export` | binary | `Symbol(symbol)` | file | none | `symbol` as in the dynamic symbol table, not demangled; `version` the symbol version name (`GLIBC_2.34`), `None` when unversioned |
 | `needed_library` | binary | `File` | file | none | `name` as in `DT_NEEDED` |
@@ -170,9 +170,11 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   the same scope whatever its layout.
 - CR LF: every text reader treats CR LF as one line end, as LF is. No fact value, `args`
   item or scope text holds the CR of a CR LF, so a checkout with CRLF line ends gives the
-  same facts and finding ids as one with LF (AD-7, FR-36). `Fact::validate` refuses a CR
-  anywhere in scope text and in the key, section and value of a `service_setting` or
-  `config_key` as `FactError::CarriageReturn`.
+  same facts and finding ids as one with LF (AD-7, FR-36). A CR that is part of the input's
+  data and not a line end (in an ELF symbol name, or an escaped `\r` in a JSON or YAML
+  value) is kept as data; a config-key segment holding one is quoted as above.
+  `Fact::validate` refuses a CR only in `Scope::Function` text, as
+  `FactError::CarriageReturn`: there it can only be a leaked line end.
 - C/C++ identification: the router identifies a C/C++ file by a listed extension, plus a
   content check that works on bytes in any encoding (or runs after the core decode
   function), so a UTF-16 or code-page file still counts. A file with a listed extension that
@@ -285,7 +287,7 @@ are:
   matches as the collector does: byte-exact, with no case folding, except AD-15's Windows
   fallback for paths on disk, which encoding declarations follow too; never inside a
   container. The budget is private: a reader can only spend it, through `work`, `buffer`,
-  `release`, `file_size`, `entry`, `decompression` and `inflate`, and read it through
+  `release`, `file_size`, `entry` and `decompression`, and read it through
   `budget()`. Only the router builds a context with a
   given budget (`with_budget`) and takes it back (`into_budget`).
 - `WorkBudget` counts against `Limits`: `work` steps (`Work`; tree-sitter steps through its
@@ -297,17 +299,28 @@ are:
 - `file_size(size)` refuses a file or entry over `FileSize`, before any of it is read.
 - The decompression ratio is decompressed bytes over compressed bytes, per compressed
   stream (a gzip, xz, bzip2 or zstd stream, a zip entry's deflate data). The reader takes
-  one `Decompression` per stream from `decompression()`, reports input with `consumed` and
-  each block of output with `inflate(stream, bytes)`. `inflate` first charges the bytes to
-  the job's decompressed total, refused past `TotalDecompressedBytes`; then, once at least
+  one `Decompression` per stream from `decompression()`, reports input with `consumed` (or
+  `set_consumed` for a running total) and each block of output with `produced(bytes)`. A
+  `Decompression` holds a handle to its job's counters, so it charges without the budget
+  or the context in reach. `produced` first charges the bytes to the job's decompressed
+  total, refused past `TotalDecompressedBytes`; then, once at least
   `RATIO_FLOOR` (1 MiB) of that stream was produced, it checks
   `produced > consumed × DecompressionRatio` and fails with the ratio rounded down, so small
   streams never trip it and a bomb stops while it is being produced.
-- `entry()` counts each entry of a job against `TotalEntries`, and `inflate` counts the
+- An entry whose bytes are decompressed lazily, as the router reads `Entry.data` after
+  `next_entry` returns (a tar member inside a gzip stream, a zip entry's deflate data), is
+  charged by core's adapters: the container wraps its compressed input in a `CountedRead`,
+  and hands the decoder's output out as a `ChargedRead` built from that count and a
+  `Decompression`. Each read charges `produced`; a refusal comes back as an `io::Error`
+  from which `Exceeded::from_io` recovers the `Exceeded`, which the router records as the
+  entry's `LimitExceeded` outcome.
+- `entry()` counts each entry of a job against `TotalEntries`, and `produced` counts the
   job's decompressed bytes against `TotalDecompressedBytes`: each job is capped at the whole
   run-wide limit inside its worker (AD-4); the run-wide cut itself stays the collector's.
-  `nested()` carries both counts down, and the router hands them back up with
-  `absorb(&child)` when a nested container ends.
+  Both counters are one per job, shared by every budget made from the job's budget:
+  `nested()` (one level deeper) and `sibling()` (the next file or entry at the same depth,
+  with fresh work and bytes). The router builds each entry's budget with one of them, never
+  with `WorkBudget::new`, which starts a new job.
 - Who charges what, so nothing is charged twice:
 
   | Charge | Charged by |
@@ -316,7 +329,7 @@ are:
   | `file_size` | the router, on a leaf file and on each entry before it reads it; never on a container's own stream, which is bounded by its entries |
   | `buffer`, `release` | the router for every buffer it fills and hands a reader (a whole leaf file, a buffered nested zip); a reader for its own allocations only |
   | `work` | the reader, for its own steps |
-  | `decompression`, `inflate` | the reader that decompresses, for its own streams |
+  | `decompression`, `produced` | the reader that decompresses, for streams it reads itself; for an entry's lazily read data, the `ChargedRead` the container hands out, read by the router |
 
 - `FactSink` takes facts, regions and notes. The router's sink charges the entry's
   `EntryBudget`; when it refuses, the reader stops and returns the `Exceeded` it got. A
@@ -479,9 +492,12 @@ are:
   (tar, zip) has `None`.
 - An outcome the collector makes itself (a run-wide cut or `RunWatchdog` aggregate, a
   `NotInCompileDatabase` aggregate, a walk-level symlink, special file or `OutOfScope`) takes
-  the key and location of the first file it covers in canonical order: its key is
-  `CanonicalKey::at(input index, that file's path, [])` and its location is that file's, as
-  the walk saw it.
+  the key and location of the first file or entry it covers in canonical order: its key is
+  `CanonicalKey::at(input index, that job's path, that entry's EntryPath)` and its location
+  is that file's or entry's. A run-wide cut that starts at `[2, 1]` of a container job has
+  key `at(index, path, [2, 1])`, after the committed `[2, 0]`, and the location from
+  `[2, 1]`'s `Opened`; a cut that starts at a job not yet dispatched uses `[]` and the
+  location the walk saw.
 - `CollectedFile{key, location, outcome, regions, notes}` carries each committed outcome
   from the collector, through the bin, to verdict: `key` is `CanonicalKey::for_outcome`,
   `location` comes from the entry's `Opened` (for an aggregate at an index never opened,

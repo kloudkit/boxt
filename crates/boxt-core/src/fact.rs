@@ -35,6 +35,70 @@ impl FileKind {
 #[serde(transparent)]
 pub struct RegionId(pub u32);
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum KeySegment {
+    Name(Text),
+    Index(u64),
+    Attribute(Text),
+}
+
+fn needs_quoting(bytes: &[u8]) -> bool {
+    bytes.is_empty()
+        || bytes[0] == b'@'
+        || bytes
+            .iter()
+            .any(|&c| c == b'.' || c == b'[' || c < 0x20 || c == 0x7f)
+}
+
+fn push_quoted(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(b"[\"");
+    for &c in bytes {
+        match c {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            0x0c => out.extend_from_slice(b"\\f"),
+            c if c < 0x20 || c == 0x7f => {
+                out.extend_from_slice(format!("\\u{c:04x}").as_bytes());
+            }
+            c => out.push(c),
+        }
+    }
+    out.extend_from_slice(b"\"]");
+}
+
+pub fn config_key_path(segments: &[KeySegment]) -> Text {
+    let mut out = Vec::new();
+    for (i, segment) in segments.iter().enumerate() {
+        let bare = |out: &mut Vec<u8>, bytes: &[u8]| {
+            if i > 0 {
+                out.push(b'.');
+            }
+            out.extend_from_slice(bytes);
+        };
+        match segment {
+            KeySegment::Index(n) => out.extend_from_slice(format!("[{n}]").as_bytes()),
+            KeySegment::Name(name) if needs_quoting(name.as_bytes()) => {
+                push_quoted(&mut out, name.as_bytes());
+            }
+            KeySegment::Name(name) => bare(&mut out, name.as_bytes()),
+            KeySegment::Attribute(name) => {
+                let mut at = vec![b'@'];
+                at.extend_from_slice(name.as_bytes());
+                if needs_quoting(&at[1..]) {
+                    push_quoted(&mut out, &at);
+                } else {
+                    bare(&mut out, &at);
+                }
+            }
+        }
+    }
+    Text::from_bytes(out)
+}
+
 closed_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
@@ -526,7 +590,7 @@ impl fmt::Display for FactError {
             ),
             FactError::CarriageReturn { kind } => write!(
                 f,
-                "fact kind {} holds a CR in its scope or value",
+                "fact kind {} holds a CR in its function scope",
                 kind.name()
             ),
             FactError::ScriptNameMismatch => {
@@ -620,26 +684,13 @@ impl Fact {
 
     fn holds_carriage_return(&self) -> bool {
         let cr = |t: &Text| t.as_bytes().contains(&b'\r');
-        let scope = match &self.location().scope {
+        match &self.location().scope {
             Scope::Function {
                 qualified_name,
                 signature,
             } => cr(qualified_name) || cr(signature),
-            Scope::Symbol(t) | Scope::ConfigKey(t) => cr(t),
-            Scope::UnitSection { section, key } => cr(section) || cr(key),
-            Scope::File | Scope::Script(_) => false,
-        };
-        let value = match self {
-            Fact::ServiceSetting {
-                section,
-                key,
-                value,
-                ..
-            } => cr(section) || cr(key) || cr(value),
-            Fact::ConfigKey { key, value, .. } => cr(key) || value.as_ref().is_some_and(cr),
             _ => false,
-        };
-        scope || value
+        }
     }
 
     fn scope_matches_fields(&self) -> bool {
