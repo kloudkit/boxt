@@ -1,0 +1,10 @@
+/target
+/dist
+
+_bmad/
+_bmad-output/
+
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.mcp.json
