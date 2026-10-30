@@ -8,26 +8,28 @@ use boxt_core::fact::{
     Directive, Fact, FactError, FactKind, FileKind, GuardChain, GuardError, GuardRegionError,
     LineRule, PathRule, RegionId,
 };
-use boxt_core::limits::{LimitError, LimitName, Limits, MEMORY_CAP_FACTOR};
+use boxt_core::limits::{LimitError, LimitName, LimitScope, Limits, MEMORY_CAP_FACTOR};
 use boxt_core::location::{
     EntryNameError, Frame, FrameKind, Location, PathText, RelPath, SCRIPT_NAMES, Scope, ScopeKind,
     ScriptName, entry_path, frame_name, normalize_value_path,
 };
 use boxt_core::message::{
-    CanonicalKey, CollectedFile, CollectorMsg, EntryBudget, EntryPath, ExitClass, FaultScope, Job,
-    JobFile, JobKind, Note, PANIC_EXIT, ParentKill, Platform, RawExit, Region, RegionError,
-    RegionReason, WORKER_MEMORY_CAP_EXIT, WorkerExit, WorkerMsg, classify_exit, decode_frame,
-    encode_frame, fault_scope, faulting_entry, resume_skips,
+    CanonicalKey, CollectedFile, CollectorMsg, EntryBudget, EntryPath, ExitClass, FRAME_PREFIX_LEN,
+    FaultScope, FrameError, Job, JobFile, JobKind, MacroDef, MacroDefError, MacroParams,
+    MacroTable, MacroTables, MacroTablesError, MergedTables, Note, PANIC_EXIT, ParentKill,
+    Platform, RawExit, Region, RegionError, RegionReason, Variadic, WORKER_MEMORY_CAP_EXIT,
+    WorkerExit, WorkerMsg, classify_exit, decode_frame, encode_definitions, encode_frame,
+    encode_macro_table, fault_scope, faulting_entry, merge_macro_tables, resume_skips,
 };
 use boxt_core::outcome::{
-    Count, Details, FaultKind, FileOutcome, NotCheckedReason, Outcome, OutcomeError, sm3_share,
-    verdict_counts,
+    Count, Details, FaultKind, FileOutcome, LineCount, NotCheckedReason, Outcome, OutcomeError,
+    line_count, sm3_share, verdict_counts,
 };
 use boxt_core::read::{
     Container, ContainerReader, Entry, EntryKind, EntryName, Exceeded, FactSink, Input, NotRead,
     RATIO_FLOOR, ReadCtx, ReadResult, Reader, WorkBudget,
 };
-use boxt_core::settings::{CompileDatabaseSetting, Settings, WorkerSettings};
+use boxt_core::settings::{CompileDatabaseSetting, Encoding, Settings, WorkerSettings};
 use boxt_core::shell::{self, is_shell_interpreter};
 use boxt_core::verdict::{CoverageError, RuleCoverage, RuleId};
 use boxt_core::version::{RULE_SCHEMA_VERSION, SchemaVersion, Versions};
@@ -398,7 +400,7 @@ fn f2_opened_names_the_entry_and_entry_done_counts_its_bytes() {
     let file = |entry: EntryPath, region: bool| CollectedFile {
         key: CanonicalKey::for_outcome(&job, &entry).unwrap(),
         location: location.clone(),
-        outcome: Outcome::new(FileOutcome::Read, Some(FileKind::Source)),
+        outcome: Outcome::new(FileOutcome::Read, Some(FileKind::Source)).with_lines(10),
         regions: if region {
             vec![Region {
                 first_line: 1,
@@ -425,12 +427,17 @@ fn f2_opened_names_the_entry_and_entry_done_counts_its_bytes() {
             &EntryPath::from([3])
         ]
     );
-    let share = sm3_share(
-        files
-            .iter()
-            .map(|f| (&f.outcome, f.has_unreadable_region())),
+    let share = sm3_share(&files);
+    assert_eq!(
+        share.files.map(|s| (s.numerator, s.denominator)),
+        Some((1, 3))
     );
-    assert_eq!(share.map(|s| (s.numerator, s.denominator)), Some((1, 3)));
+    assert_eq!(
+        share
+            .lines
+            .map(|s| (s.numerator, s.denominator, s.uncounted_files)),
+        Some((3, 30, 0))
+    );
     assert_eq!(
         verdict_counts(files.iter().map(|f| &f.outcome.file)).read,
         3
@@ -1292,8 +1299,8 @@ fn facts_use_external_tagging_and_frames_carry_json_for_now() {
 fn schema_versions_are_major_dot_minor() {
     assert_eq!(RULE_SCHEMA_VERSION, SchemaVersion::new(1, 0));
     let json = serde_json::to_value(Versions::CURRENT).unwrap();
-    for (_, version) in json.as_object().unwrap() {
-        assert_eq!(version, &serde_json::json!("1.0"));
+    for (name, version) in json.as_object().unwrap() {
+        assert_eq!(version, &serde_json::json!("1.0"), "{name}");
     }
     assert!(RULE_SCHEMA_VERSION.accepts("1.0".parse().unwrap()));
     assert!(!RULE_SCHEMA_VERSION.accepts("1.4".parse().unwrap()));
@@ -1460,12 +1467,17 @@ fn worker_outcomes_and_regions_are_checked_by_the_collector() {
         })
     };
     let child = EntryPath::from([2, 3]);
-    assert_eq!(at(FileOutcome::Read).validate_from_worker(&child), Ok(()));
+    assert_eq!(
+        at(FileOutcome::Read)
+            .with_lines(12)
+            .validate_from_worker(&child),
+        Ok(())
+    );
     assert_eq!(aggregate(Some(5), 5).validate_from_worker(&child), Ok(()));
     assert_eq!(aggregate(None, 0).validate_from_worker(&child), Ok(()));
     let marked = Outcome {
         host_dependent: true,
-        ..at(FileOutcome::Read)
+        ..at(FileOutcome::Read).with_lines(12)
     };
     for (outcome, entry, error) in [
         (
@@ -1539,12 +1551,35 @@ fn counts_saturate_instead_of_overflowing() {
         verdict_counts(&outcomes).not_checked,
         Count::Exact(u64::MAX)
     );
-    let source: Vec<Outcome> = outcomes
+    let source: Vec<CollectedFile> = outcomes
         .iter()
-        .map(|f| Outcome::new(f.clone(), Some(FileKind::Source)))
+        .map(|f| {
+            let outcome = Outcome::new(f.clone(), Some(FileKind::Source));
+            let outcome = match f {
+                FileOutcome::NotChecked { .. } => outcome.with_lines(u64::MAX - 1),
+                _ => outcome,
+            };
+            common::collected(outcome, &[])
+        })
+        .chain([
+            common::collected(
+                Outcome::new(FileOutcome::Read, Some(FileKind::Source)).with_lines(u64::MAX),
+                &[(1, u32::MAX)],
+            ),
+            common::collected(
+                Outcome::new(FileOutcome::Read, Some(FileKind::Source)).with_lines(u64::MAX),
+                &[(1, u32::MAX)],
+            ),
+        ])
         .collect();
-    let share = sm3_share(source.iter().map(|o| (o, false))).unwrap();
-    assert_eq!((share.numerator, share.denominator), (u64::MAX, u64::MAX));
+    let share = sm3_share(&source);
+    let files = share.files.unwrap();
+    assert_eq!((files.numerator, files.denominator), (u64::MAX, u64::MAX));
+    let lines = share.lines.unwrap();
+    assert_eq!(
+        (lines.numerator, lines.denominator, lines.uncounted_files),
+        (u64::MAX, u64::MAX, u64::MAX)
+    );
 }
 
 #[test]
@@ -1981,4 +2016,466 @@ fn a_cut_inside_a_container_sorts_after_the_entries_before_it() {
             &EntryPath::from([3])
         ]
     );
+}
+
+fn source_outcome(file: FileOutcome) -> Outcome {
+    Outcome::new(file, Some(FileKind::Source))
+}
+
+fn file_size_cut() -> FileOutcome {
+    FileOutcome::NotChecked {
+        reason: NotCheckedReason::LimitExceeded(LimitName::FileSize),
+        details: Details::None,
+    }
+}
+
+#[test]
+fn s1_a_partial_count_is_marked_and_never_rides_on_a_read_outcome() {
+    let child = EntryPath::from([1]);
+    let partial = source_outcome(file_size_cut()).with_partial_lines(400);
+    assert_eq!(
+        partial.lines,
+        Some(LineCount {
+            lines: 400,
+            complete: false
+        })
+    );
+    assert_eq!(partial.validate_from_worker(&child), Ok(()));
+    assert_eq!(
+        source_outcome(FileOutcome::Read)
+            .with_partial_lines(4)
+            .validate_from_worker(&child),
+        Err(OutcomeError::PartialCountOnRead)
+    );
+}
+
+#[test]
+fn s2_s5_uncounted_and_incomplete_files_are_listed_in_canonical_order() {
+    let files = [
+        common::collected_at("z.c", source_outcome(file_size_cut()), &[]),
+        common::collected_at(
+            "m.c",
+            source_outcome(file_size_cut()).with_partial_lines(3),
+            &[],
+        ),
+        common::collected_at("a.c", source_outcome(file_size_cut()), &[]),
+    ];
+    let share = sm3_share(&files);
+    let lines = share.lines.unwrap();
+    assert_eq!(
+        (lines.numerator, lines.denominator),
+        (3, 3),
+        "the partial count joins both counts"
+    );
+    assert_eq!((lines.uncounted_files, lines.incomplete_files), (2, 1));
+    let keys = |paths: &[&str]| -> Vec<CanonicalKey> {
+        paths
+            .iter()
+            .map(|p| CanonicalKey::at(0, RelPath::try_from(*p).unwrap(), EntryPath::job()))
+            .collect()
+    };
+    assert_eq!(share.uncounted.as_slice(), keys(&["a.c", "z.c"]).as_slice());
+    assert_eq!(share.incomplete.as_slice(), keys(&["m.c"]).as_slice());
+
+    let empty = common::collected_at("e.c", source_outcome(FileOutcome::Read).with_lines(0), &[]);
+    assert_eq!(sm3_share([&empty]).lines, None);
+    let json = serde_json::to_value(sm3_share(&files)).unwrap();
+    let mut fields: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str())
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["files", "incomplete", "lines", "uncounted"]);
+}
+
+fn macros_job(path: &str) -> Job {
+    Job {
+        kind: JobKind::Definitions,
+        input: input(),
+        file: JobFile::InInput(RelPath::try_from(path).unwrap()),
+        resume_after: None,
+    }
+}
+
+#[test]
+fn s6_a_worker_keeps_only_complete_tables_and_replaces_them() {
+    let def = |name: &str, line| common::macro_def(name, "src/config.h", line, None);
+    let mut tables = MacroTables::new();
+    assert_eq!(tables.for_tree(0), None);
+
+    tables.receive(0, vec![def("B", 2)].into(), false).unwrap();
+    assert_eq!(
+        tables.for_tree(0),
+        None,
+        "a table without its end mark is not used"
+    );
+    tables.receive(0, vec![def("A", 1)].into(), true).unwrap();
+    let first = tables.for_tree(0).unwrap().clone();
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].name, Text::from("A"));
+
+    tables.receive(0, vec![def("C", 3)].into(), false).unwrap();
+    assert_eq!(
+        tables.for_tree(0),
+        None,
+        "a replacement drops the old table"
+    );
+    tables.receive(0, MacroTable::new(), true).unwrap();
+    let second = tables.for_tree(0).unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].name, Text::from("C"));
+
+    tables.receive(4, MacroTable::new(), true).unwrap();
+    assert_eq!(tables.for_tree(4), Some(&MacroTable::new()));
+    assert_eq!(tables.for_tree(3), None);
+
+    assert_eq!(
+        tables.receive(5, vec![def("D", 4)].into(), true),
+        Err(MacroTablesError::ForeignDefinition { tree: 5 })
+    );
+    assert_eq!(tables.for_tree(5), None);
+}
+
+#[test]
+fn s7_a_definition_must_name_an_identifier_with_distinct_parameters() {
+    let job = macros_job("src/config.h");
+    let with = |name: &str, params: Option<MacroParams>| MacroDef {
+        name: Text::from(name),
+        ..common::macro_def("X", "src/config.h", 3, params)
+    };
+    let params = |names: &[&str], variadic: Option<Variadic>| {
+        Some(MacroParams {
+            names: names.iter().map(|n| Text::from(*n)).collect(),
+            variadic,
+        })
+    };
+    let cap = 4096;
+    for ok in ["FOO", "_x1", "$sys", "na\u{ef}ve", "a"] {
+        assert_eq!(with(ok, None).validate(&job, cap), Ok(()), "{ok}");
+    }
+    assert_eq!(
+        with("", None).validate(&job, cap),
+        Err(MacroDefError::EmptyName)
+    );
+    for bad in ["1A", "A-B", "A B", "A(", "A.b"] {
+        assert_eq!(
+            with(bad, None).validate(&job, cap),
+            Err(MacroDefError::NotIdentifier),
+            "{bad}"
+        );
+    }
+    let raw = MacroDef {
+        name: Text::from_bytes(vec![b'A', 0xFF]),
+        ..with("A", None)
+    };
+    assert_eq!(raw.validate(&job, cap), Err(MacroDefError::NotIdentifier));
+    assert_eq!(
+        with("F", params(&["a", "b"], Some(Variadic::Ellipsis))).validate(&job, cap),
+        Ok(())
+    );
+    assert_eq!(
+        with("F", params(&["a", "a"], None)).validate(&job, cap),
+        Err(MacroDefError::DuplicateParameter)
+    );
+    assert_eq!(
+        with("F", params(&["a"], Some(Variadic::Named(Text::from("a"))))).validate(&job, cap),
+        Err(MacroDefError::DuplicateParameter)
+    );
+    assert_eq!(
+        with(
+            "F",
+            params(&["a"], Some(Variadic::Named(Text::from("rest"))))
+        )
+        .validate(&job, cap),
+        Ok(())
+    );
+    assert_eq!(
+        with("F", params(&["1"], None)).validate(&job, cap),
+        Err(MacroDefError::BadParameter)
+    );
+    assert_eq!(
+        with("F", params(&[], Some(Variadic::Named(Text::from(""))))).validate(&job, cap),
+        Err(MacroDefError::BadParameter)
+    );
+}
+
+#[test]
+fn s8_a_line_count_is_never_above_the_bytes_read() {
+    let outcome = source_outcome(FileOutcome::Read).with_lines(10);
+    assert_eq!(outcome.validate_lines(10), Ok(()));
+    assert_eq!(
+        outcome.validate_lines(9),
+        Err(OutcomeError::LinesAboveBytes {
+            lines: 10,
+            bytes: 9
+        })
+    );
+    let partial = source_outcome(file_size_cut()).with_partial_lines(5);
+    assert!(partial.validate_lines(4).is_err());
+    assert_eq!(source_outcome(file_size_cut()).validate_lines(0), Ok(()));
+}
+
+#[test]
+fn s4_the_merged_table_stops_at_its_byte_cap_in_canonical_order() {
+    let defs = vec![
+        common::macro_def("A", "src/z.h", 1, None),
+        common::macro_def("Z", "src/a.h", 9, None),
+        common::macro_def("M", "src/a.h", 2, None),
+    ];
+    let whole = merge_macro_tables(defs.clone(), u64::MAX);
+    assert!(whole.cut.is_empty());
+    assert_eq!(whole.table(0), MacroTable::from(defs.clone()));
+
+    let two = defs[1].table_bytes() + defs[2].table_bytes();
+    let cut = merge_macro_tables(defs.clone(), two);
+    assert_eq!(cut.cut.as_slice(), &[0]);
+    let names: Vec<Text> = cut.table(0).iter().map(|d| d.name.clone()).collect();
+    assert_eq!(names, [Text::from("M"), Text::from("Z")]);
+    let reversed: Vec<MacroDef> = defs.iter().rev().cloned().collect();
+    assert_eq!(merge_macro_tables(reversed, two), cut);
+    assert_eq!(merge_macro_tables(defs, two - 1).table(0).len(), 0);
+    assert_eq!(LimitName::MacroTableBytes.flag(), "macro-table-bytes");
+    assert_eq!(LimitName::MacroTableBytes.spec().scope, LimitScope::RunWide);
+}
+
+#[test]
+fn s12_a_cap_above_the_frame_prefix_splits_like_the_prefix_maximum() {
+    let defs: Vec<MacroDef> = (1..=3)
+        .map(|i| common::macro_def(&format!("M{i}"), "src/config.h", i, None))
+        .collect();
+    assert_eq!(
+        encode_definitions(&defs, u64::MAX).unwrap(),
+        encode_definitions(&defs, u64::from(u32::MAX)).unwrap()
+    );
+    let table = MacroTable::from(defs);
+    assert_eq!(
+        encode_macro_table(0, &table, u64::MAX).unwrap(),
+        encode_macro_table(0, &table, u64::from(u32::MAX)).unwrap()
+    );
+}
+
+#[test]
+fn s14_a_definition_at_the_envelope_boundary_fits_both_directions() {
+    let job = macros_job("src/config.h");
+    let def = common::macro_def("EDGE", "src/config.h", 7, None);
+    let table = MacroTable::from(vec![def.clone()]);
+    let worker = payload_len(&WorkerMsg::Definitions {
+        definitions: vec![def.clone()],
+    });
+    let collector = payload_len(&CollectorMsg::Macros {
+        tree: u32::MAX,
+        definitions: table.clone(),
+        end: false,
+    });
+    let edge = worker.max(collector);
+    assert_eq!(def.validate(&job, edge), Ok(()));
+    assert!(matches!(
+        def.validate(&job, edge - 1),
+        Err(MacroDefError::TooLong { .. })
+    ));
+    assert!(encode_definitions(std::slice::from_ref(&def), edge).is_ok());
+    assert!(encode_macro_table(u32::MAX, &table, edge).is_ok());
+    assert!(matches!(
+        encode_definitions(std::slice::from_ref(&def), edge - 1),
+        Err(FrameError::TooLong { .. })
+    ));
+}
+
+fn payload_len<T: serde::Serialize>(msg: &T) -> u64 {
+    let frame = encode_frame(msg, u64::from(u32::MAX)).unwrap();
+    (frame.len() - FRAME_PREFIX_LEN) as u64
+}
+
+#[test]
+fn s15_only_an_undeclared_file_is_sniffed_for_a_utf16_mark() {
+    let bytes = [0xFF, 0xFE, b'\n', 0x00];
+    assert_eq!(line_count(&bytes, None), 1);
+    assert_eq!(line_count(&bytes, Some(Encoding::Utf16Le)), 1);
+    for declared in [
+        Encoding::Utf8,
+        Encoding::Latin1,
+        Encoding::WindowsCodePage(1252),
+    ] {
+        assert_eq!(line_count(&bytes, Some(declared)), 2, "{declared:?}");
+    }
+    let be = [0xFE, 0xFF, 0x00, b'\n'];
+    assert_eq!(line_count(&be, None), 1);
+    assert_eq!(line_count(&be, Some(Encoding::Utf8)), 1);
+    assert_eq!(
+        line_count(&[0xFE, 0xFF, b'a', b'\n', b'b'], Some(Encoding::Utf8)),
+        2
+    );
+}
+
+#[test]
+fn s16_regions_of_a_file_with_no_count_are_not_checked_against_one() {
+    let file = common::collected_at(
+        "src/main.c",
+        source_outcome(file_size_cut()),
+        &[(5, 1_000_000)],
+    );
+    assert_eq!(file.outcome.lines, None);
+    assert_eq!(file.validate_regions(), Ok(()));
+    let bad = common::collected_at("src/main.c", source_outcome(file_size_cut()), &[(0, 3)]);
+    assert_eq!(bad.validate_regions(), Err(RegionError::LineZero));
+}
+
+#[test]
+fn s4_the_merge_keeps_whole_files_and_a_strict_prefix() {
+    let def = |name: &str, path: &str, body: usize| MacroDef {
+        body: Text::from("x".repeat(body)),
+        ..common::macro_def(name, path, 1, None)
+    };
+    let defs = vec![
+        def("A", "src/x.h", 1),
+        def("B", "src/y.h", 400),
+        def("C", "src/z.h", 1),
+        def("D", "src/x.h", 1),
+    ];
+    let small = defs[0].table_bytes() + defs[3].table_bytes();
+    let cap = small + defs[2].table_bytes() + 10;
+    assert!(cap < small + defs[1].table_bytes());
+    let merged = merge_macro_tables(defs.clone(), cap);
+    assert_eq!(merged.cut.as_slice(), &[0]);
+    let names: Vec<Text> = merged.table(0).iter().map(|d| d.name.clone()).collect();
+    assert_eq!(names, [Text::from("A"), Text::from("D")]);
+    assert_eq!(merge_macro_tables(defs, small - 1).table(0).len(), 0);
+}
+
+fn in_input(def: MacroDef, index: u32, given: &str) -> MacroDef {
+    MacroDef {
+        location: Location {
+            input: boxt_core::location::InputRef {
+                index,
+                given: Text::from(given),
+            },
+            ..def.location.clone()
+        },
+        ..def
+    }
+}
+
+#[test]
+fn s4_the_cap_is_run_wide_in_input_order_and_ignores_the_given_path() {
+    let def = |name: &str, path: &str| common::macro_def(name, path, 1, None);
+    let defs = |given: &str| {
+        vec![
+            in_input(def("B", "b.h"), 1, given),
+            in_input(def("A", "a.h"), 0, "/repo"),
+            in_input(def("C", "c.h"), 1, given),
+            in_input(def("D", "d.h"), 2, "/third"),
+        ]
+    };
+    let cap = 3 * def("A", "a.h").table_bytes();
+    let short = merge_macro_tables(defs("/src"), cap);
+    let long = merge_macro_tables(defs("/a/much/longer/way/to/the/same/src"), cap);
+    assert_eq!(short.cut, long.cut);
+    assert_eq!(short.cut.as_slice(), &[2]);
+    let names = |m: &MergedTables, tree| -> Vec<Text> {
+        m.table(tree).iter().map(|d| d.name.clone()).collect()
+    };
+    for merged in [&short, &long] {
+        assert_eq!(names(merged, 0), [Text::from("A")]);
+        assert_eq!(names(merged, 1), [Text::from("B"), Text::from("C")]);
+        assert!(names(merged, 2).is_empty());
+    }
+    let tight = merge_macro_tables(defs("/src"), cap - 1);
+    assert_eq!(tight.cut.as_slice(), &[1, 2]);
+    assert_eq!(names(&tight, 1), [Text::from("B")]);
+}
+
+#[test]
+fn s7_a_parameter_named_va_args_and_non_ascii_blanks_are_refused() {
+    let job = macros_job("src/config.h");
+    let with = |name: &str, names: &[&str]| MacroDef {
+        name: Text::from(name),
+        ..common::macro_def(
+            "X",
+            "src/config.h",
+            3,
+            Some(MacroParams {
+                names: names.iter().map(|n| Text::from(*n)).collect(),
+                variadic: None,
+            }),
+        )
+    };
+    assert_eq!(
+        with("F", &["__VA_ARGS__"]).validate(&job, 4096),
+        Err(MacroDefError::BadParameter)
+    );
+    for bad in ["A\u{a0}B", "A\u{2028}", "\u{85}A", "A\u{3000}"] {
+        assert_eq!(
+            with(bad, &[]).validate(&job, 4096),
+            Err(MacroDefError::NotIdentifier),
+            "{bad:?}"
+        );
+        assert_eq!(
+            with("F", &[bad]).validate(&job, 4096),
+            Err(MacroDefError::BadParameter),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn s10_a_region_past_the_end_is_clamped_to_the_last_line_and_still_counts() {
+    let region = Region {
+        first_line: 11,
+        last_line: 11,
+        reason: RegionReason::Unparseable,
+    };
+    let fitted = region.fit_within(10).unwrap();
+    assert_eq!((fitted.first_line, fitted.last_line), (10, 10));
+    assert_eq!(region.fit_within(0), None);
+    let wide = Region {
+        first_line: 8,
+        last_line: 12,
+        ..region
+    };
+    let fitted_wide = wide.fit_within(10).unwrap();
+    assert_eq!((fitted_wide.first_line, fitted_wide.last_line), (8, 10));
+
+    let file = common::collected_at(
+        "src/main.c",
+        source_outcome(FileOutcome::Read).with_lines(10),
+        &[(fitted.first_line, fitted.last_line)],
+    );
+    assert_eq!(file.validate_regions(), Ok(()));
+    assert!(file.has_unreadable_region());
+    let share = sm3_share([&file]);
+    let lines = share.lines.unwrap();
+    assert_eq!((lines.numerator, lines.denominator), (1, 10));
+    let files = share.files.unwrap();
+    assert_eq!((files.numerator, files.denominator), (1, 1));
+}
+
+#[test]
+fn s5_an_uncounted_aggregate_lists_one_key_and_adds_its_count() {
+    let aggregate = common::collected_at(
+        "b.c",
+        source_outcome(FileOutcome::Aggregate {
+            reason: NotCheckedReason::LimitExceeded(LimitName::TotalEntries),
+            count: Some(3),
+            at_least: 3,
+        }),
+        &[],
+    );
+    let single = common::collected_at("a.c", source_outcome(file_size_cut()), &[]);
+    let share = sm3_share([&aggregate, &single]);
+    assert_eq!(share.lines.unwrap().uncounted_files, 4);
+    assert_eq!(
+        share.uncounted.as_slice(),
+        &[single.key.clone(), aggregate.key.clone()]
+    );
+}
+
+#[test]
+fn s16_regions_are_checked_against_an_incomplete_count() {
+    let outcome = source_outcome(file_size_cut()).with_partial_lines(5);
+    let inside = common::collected_at("src/main.c", outcome.clone(), &[(2, 5)]);
+    assert_eq!(inside.validate_regions(), Ok(()));
+    let past = common::collected_at("src/main.c", outcome, &[(4, 6)]);
+    assert_eq!(past.validate_regions(), Err(RegionError::PastEnd));
 }

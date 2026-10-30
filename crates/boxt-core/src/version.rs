@@ -147,6 +147,7 @@ mod tests {
     #[test]
     fn versions_print_and_parse_as_major_dot_minor() {
         assert_eq!(RULE_SCHEMA_VERSION.to_string(), "1.0");
+        assert_eq!(JSON_OUTPUT_VERSION.to_string(), "1.0");
         assert_eq!("2.13".parse(), Ok(SchemaVersion::new(2, 13)));
         assert_eq!("0.0".parse(), Ok(SchemaVersion::new(0, 0)));
         for bad in [

@@ -320,7 +320,8 @@ pub struct TargetVerdict {
 pub struct Result {
     pub versions: Versions,
     pub counts: VerdictCounts,
-    pub sm3: Option<Sm3>,
+    pub sm3: Sm3,
+    pub macro_tables_cut: SortedVec<u32>,
     pub host_dependent: bool,
     pub targets: SortedVec<TargetVerdict>,
     pub findings: SortedVec<Finding>,

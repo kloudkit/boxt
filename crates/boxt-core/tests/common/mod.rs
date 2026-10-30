@@ -10,11 +10,12 @@ use boxt_core::location::{
     Frame, FrameKind, InputRef, Location, PathText, RelPath, Scope, ScopeKind, ScriptName,
 };
 use boxt_core::message::{
-    CollectorMsg, EntryPath, Job, JobFile, JobKind, Note, Region, RegionReason, WorkerMsg,
+    CanonicalKey, CollectedFile, CollectorMsg, EntryPath, Job, JobFile, JobKind, MacroDef,
+    MacroParams, MacroTable, Note, Region, RegionReason, Variadic, WorkerMsg,
 };
 use boxt_core::outcome::{
-    Details, FaultKind, FileOutcome, LinkTarget, NotCheckedReason, OutOfScopeCause, Outcome,
-    OwnFileRole, SpecialKind,
+    Details, FaultKind, FileOutcome, LineCount, LinkTarget, NotCheckedReason, OutOfScopeCause,
+    Outcome, OwnFileRole, SpecialKind,
 };
 use boxt_core::settings::{Encoding, EncodingDecl, PathPattern, WorkerSettings};
 use boxt_core::shell::{Assignment, RedirectOp, Redirection};
@@ -371,6 +372,12 @@ pub fn all_outcomes() -> Vec<Outcome> {
         .into_iter()
         .enumerate()
         .map(|(i, file)| Outcome {
+            lines: matches!(file, FileOutcome::Read | FileOutcome::NotChecked { .. }).then_some(
+                LineCount {
+                    lines: i as u64 * 7,
+                    complete: i % 4 != 1,
+                },
+            ),
             file,
             file_kind: if i % 2 == 0 {
                 Some(FileKind::Source)
@@ -416,7 +423,110 @@ pub fn all_collector_msgs() -> Vec<CollectorMsg> {
             file: JobFile::Setting(Text::from("/build/compile_commands.json")),
             resume_after: None,
         }),
+        CollectorMsg::Job(Job {
+            kind: JobKind::Definitions,
+            input: input(),
+            file: JobFile::InInput(RelPath::try_from("src/config.h").unwrap()),
+            resume_after: None,
+        }),
+        CollectorMsg::Macros {
+            tree: 0,
+            definitions: macro_table(),
+            end: true,
+        },
+        CollectorMsg::Macros {
+            tree: 0,
+            definitions: MacroTable::new(),
+            end: false,
+        },
     ]
+}
+
+pub fn tree_location(path: &str, line: u32) -> Location {
+    Location {
+        input: input(),
+        frames: vec![],
+        path: Some(RelPath::try_from(path).unwrap()),
+        line: Some(line),
+        scope: Scope::File,
+    }
+}
+
+pub fn macro_def(name: &str, path: &str, line: u32, params: Option<MacroParams>) -> MacroDef {
+    MacroDef {
+        name: Text::from(name),
+        location: tree_location(path, line),
+        params,
+        body: Text::from("do {   x; /* kept */ } while (0)"),
+    }
+}
+
+pub fn macro_defs() -> Vec<MacroDef> {
+    vec![
+        macro_def("FOO", "src/config.h", 9, None),
+        macro_def("FOO", "src/config.h", 3, None),
+        macro_def(
+            "LOG",
+            "src/config.h",
+            12,
+            Some(MacroParams {
+                names: vec![Text::from("level"), Text::from("fmt")],
+                variadic: Some(Variadic::Ellipsis),
+            }),
+        ),
+        macro_def(
+            "TRACE",
+            "src/config.h",
+            14,
+            Some(MacroParams {
+                names: vec![],
+                variadic: Some(Variadic::Named(Text::from("args"))),
+            }),
+        ),
+        macro_def(
+            "EMPTY",
+            "src/config.h",
+            15,
+            Some(MacroParams {
+                names: vec![],
+                variadic: None,
+            }),
+        ),
+        MacroDef {
+            body: Text::from_bytes(vec![0xff, b'1']),
+            ..macro_def("RAW", "src/config.h", 16, None)
+        },
+    ]
+}
+
+pub fn macro_table() -> MacroTable {
+    let mut defs = macro_defs();
+    defs.push(macro_def("FOO", "src/a.c", 2, None));
+    MacroTable::from(defs)
+}
+
+pub fn collected(outcome: Outcome, regions: &[(u32, u32)]) -> CollectedFile {
+    collected_at("src/main.c", outcome, regions)
+}
+
+pub fn collected_at(path: &str, outcome: Outcome, regions: &[(u32, u32)]) -> CollectedFile {
+    CollectedFile {
+        key: CanonicalKey::at(0, RelPath::try_from(path).unwrap(), EntryPath::job()),
+        location: Location {
+            line: None,
+            ..tree_location(path, 1)
+        },
+        outcome,
+        regions: regions
+            .iter()
+            .map(|&(first_line, last_line)| Region {
+                first_line,
+                last_line,
+                reason: RegionReason::Unparseable,
+            })
+            .collect(),
+        notes: vec![],
+    }
 }
 
 pub fn opened(entry: EntryPath) -> WorkerMsg {
@@ -481,11 +591,18 @@ pub fn all_worker_msgs() -> Vec<WorkerMsg> {
             entry: EntryPath::from([3]),
             notes: vec![Note::MissingSymbols],
         },
+        WorkerMsg::Notes {
+            entry: EntryPath::job(),
+            notes: vec![Note::DroppedDefinitions(2)],
+        },
         WorkerMsg::CompileUnits {
             entries: vec![CompileUnit {
                 directory: Text::from("/build"),
                 file: Text::from("../src/main.c"),
             }],
+        },
+        WorkerMsg::Definitions {
+            definitions: macro_defs(),
         },
         WorkerMsg::JobDone { outcome: None },
     ];
@@ -505,6 +622,7 @@ pub fn all_worker_msgs() -> Vec<WorkerMsg> {
 pub fn collector_variant(msg: &CollectorMsg) -> &'static str {
     match msg {
         CollectorMsg::Settings(_) => "settings",
+        CollectorMsg::Macros { .. } => "macros",
         CollectorMsg::Job(_) => "job",
     }
 }
@@ -517,6 +635,7 @@ pub fn worker_variant(msg: &WorkerMsg) -> &'static str {
         WorkerMsg::Notes { .. } => "notes",
         WorkerMsg::EntryDone { .. } => "entry_done",
         WorkerMsg::CompileUnits { .. } => "compile_units",
+        WorkerMsg::Definitions { .. } => "definitions",
         WorkerMsg::JobDone { .. } => "job_done",
     }
 }

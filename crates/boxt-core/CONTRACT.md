@@ -26,8 +26,11 @@ hand-written.
 | `GuardChain.frames` | as written: the chain's opening directive first, the branch holding the code last |
 | `Fact::Call.args`, `ShellCommand.assignments`, `.argv`, `.redirections` | as written |
 | `GuardFrame.identifiers` | sorted, `Text` byte order |
-| `WorkerMsg::Facts.facts`, `.Regions.regions`, `.Notes.notes`, `CompileUnits.entries` | as the reader produced them |
+| `WorkerMsg::Facts.facts`, `.Regions.regions`, `.Notes.notes`, `CompileUnits.entries`, `Definitions.definitions` | as the reader produced them |
+| `MacroParams.names` | as written |
+| `MacroTable`, `CollectorMsg::Macros.definitions` | sorted by `MacroDef`'s derived `Ord`: name bytes, then `location`, then `params` and `body`; duplicates kept |
 | `CollectedFile.regions`, `.notes` | as received |
+| `Sm3.uncounted`, `.incomplete` | sorted `CanonicalKey`s: canonical order |
 | a run's `CollectedFile`s | sorted by `CollectedFile.key`, a `CanonicalKey` |
 | `Settings.inputs` | input order as given; it is the `InputRef.index` |
 | `Settings.excludes` | as given |
@@ -46,7 +49,8 @@ job's path, then the `EntryPath`, then `Location`. Every comparison is on byte f
 outcome's key has no location and sorts before the facts of its entry. `Fact` and
 `WorkerMsg` have no `Ord`, so nothing can sort them by variant order by mistake; the
 collector sorts by `CanonicalKey::for_fact` and `CanonicalKey::for_outcome`. Both return
-`None` for a compile-database job, whose output never joins the run's facts or outcomes.
+`None` for any job but a `Route` job: a compile-database or definitions job's output never
+joins the run's facts or outcomes.
 
 ## Wire form (AD-14, AD-5)
 
@@ -340,14 +344,18 @@ are:
 
 ### Messages and frames
 
-- Collector to worker: `Settings(WorkerSettings)` first, then `Job`s. `WorkerSettings` holds
-  limits and declared encodings only, never corpus data.
+- Collector to worker: `Settings(WorkerSettings)` first, then `Job`s, and, before the first
+  source job of an input tree, that tree's `Macros{tree, definitions, end}` frames.
+  `WorkerSettings` holds limits and declared encodings only: never corpus data, and never
+  the macro table (§ Macro definitions).
 - Worker to collector: `Opened`, `Facts`, `Regions`, `Notes`, `EntryDone`, `CompileUnits`,
-  `JobDone`.
+  `Definitions`, `JobDone`.
 - Every message is one frame: a `u32` little-endian payload length, then the payload,
   written by `encode_frame` and read by `decode_frame`. The payload is `serde_json` until
   Story 1.4 chooses an encoding; any serde format works (Wire form).
-- The frame cap is the `EntryMessageBytes` limit: both ends pass it as `max_len`.
+- The frame cap is the `EntryMessageBytes` limit: both ends pass it as `max_len`, in both
+  directions. The collector passes that same value to `MacroDef::validate` and to
+  `encode_macro_table`, so a table built from validated definitions always fits.
   `encode_frame` refuses a payload over it, and `decode_frame` refuses a length prefix over
   it before reading the payload.
 - `decode_frame` returns `Ok(None)` at end of stream on a frame boundary, and
@@ -368,8 +376,12 @@ are:
   with `path`). An input root the user gave is followed once, when it is a link, by both
   the walk and the worker; nothing below it is ever followed (AD-3). A `CompileDatabase` job's
   file is `JobFile::Setting`, the path as the bin resolved it from the setting, which may
-  lie outside every input. `Job::is_well_formed` checks the pairing, and that only a
+  lie outside every input. A `Definitions` job has the same `JobFile` as its file's `Route`
+  job (§ Macro definitions). `Job::is_well_formed` checks the pairing, and that only a
   `Route` job resumes.
+- Every walked file that `classify` and the extension table make C/C++ gets a `Definitions`
+  job, `NotInCompileDatabase` files included, since the macros of a header apply to the
+  files that include it. An `OutOfScope` file gets none.
 - A worker runs one job at a time, on one thread (RA2-M8). Parallelism comes from the pool,
   one worker per core by default.
 
@@ -415,7 +427,8 @@ are:
 - Per entry, facts are capped by `EntryFacts` and message bytes by `EntryMessageBytes`.
   Both ends keep one `EntryBudget` per entry and charge it only through
   `EntryBudget::charge_frame(msg, payload_len)`, with every `Facts`, `Regions` and `Notes`
-  frame of that entry: it adds `payload_len` (the frame's payload bytes, without the
+  frame of that entry, and every `Definitions` frame of a definitions job (one budget for
+  the job): it adds `payload_len` (the frame's payload bytes, without the
   4-byte prefix) to the bytes, and the number of facts in a `Facts` frame to the facts.
   Other messages, `Opened` included, charge nothing. An entry over either limit is
   `NotChecked` with `LimitExceeded` naming the limit (`exceeded_outcome`), and contributes
@@ -479,12 +492,42 @@ are:
 
 - Every file and every container entry gets exactly one outcome. A container counts once,
   through its entry 0; `JobDone{None}` adds nothing.
-- The collector checks every outcome and region a worker sends. `Outcome::validate_from_worker`
-  refuses `OutOfScope` and `NotInCompileDatabase` (only the collector makes those),
-  `host_dependent: true` (only the collector marks it), an `Aggregate` with `count: Some(n)`
-  where `n` is 0 or below `at_least`, and an `Aggregate` on a container's entry 0.
-  `Region::validate` refuses `first_line` 0 and `last_line` before `first_line`. A failure is
-  `Fault(BadFrame)` for the job, as for a fact.
+- The collector checks every outcome and region a worker sends.
+  `Outcome::validate_from_worker` refuses `OutOfScope` and `NotInCompileDatabase` (only
+  the collector makes those), `host_dependent: true` (only the collector marks it), an
+  `Aggregate` with `count: Some(n)` where `n` is 0 or below `at_least`, an `Aggregate` on a
+  container's entry 0, a `Read` outcome with `file_kind: Source` and no line count
+  (`NoLineCount`), an `Aggregate` with a line count (`LinesOnAggregate`), and a `Read`
+  outcome whose count is incomplete (`PartialCountOnRead`).
+  `Outcome::validate_lines(bytes)` refuses a line count above `bytes` (`LinesAboveBytes`),
+  since every line has at least one byte: the collector passes `EntryDone.bytes` for an
+  entry, and the `FileSize` limit for the outcome on `JobDone{Some(..)}`, which carries no
+  byte count. `Region::validate` refuses `first_line` 0 and `last_line` before
+  `first_line`; once the entry's outcome arrives,
+  `CollectedFile::validate_regions` also refuses a region whose `last_line` is past the
+  outcome's line count (`PastEnd`), and checks nothing against a count that is `None`. A
+  failure is `Fault(BadFrame)` for the job, as for a fact.
+- A reader fits its regions to the file's line count before sending them
+  (`Region::fit_within`), since a parser may place an error at end of file on the line
+  after the last one: it clamps both `first_line` and `last_line` to the last line, so a
+  region past the end becomes a region on the last line and the file still counts as
+  having an unreadable region. A 0-line file sends no region. So `PastEnd` only catches a
+  worker that did not, and no clamp leaves `first_line` after `last_line`.
+- `Outcome.lines` is a `LineCount{lines, complete}`, or `None` when no line was counted. A
+  line count is the number of LF line ends, plus 1 when the counted bytes are non-empty and
+  do not end in LF. For a UTF-16 file (declared `Utf16Le` or `Utf16Be`, or code page 1200
+  or 1201, or undeclared and starting with a UTF-16 byte-order mark) it counts 16-bit code
+  units after the mark, an odd final byte being one more unit that is not LF; every other
+  file, a declared UTF-8 or code-page file starting with `FF FE` included, counts its bytes
+  as given. So CR LF ends one line, a CR-only file is 1 line, `"a\nb"` is 2 and an empty
+  file 0. `line_count(bytes, declared)` and the streaming `LineCounter` are the one
+  implementation.
+- The worker counts line ends while it streams any file it opens, up to `FileSize`, and
+  reports the count whatever the outcome, `NotChecked` included. A count that reached the
+  end of the file is complete (`with_lines`). A count stopped before the end, by
+  `FileSize`, the ratio, `Work` or any other cut after the first byte, is kept and marked
+  incomplete (`with_partial_lines`). A file never opened, cut before any byte, or ended by a
+  fault before it reported, has `None`; an `Aggregate` always has `None`.
 - `Outcome.file_kind` is the `FileKind` the router identified, from the entry's `Opened`,
   or `None` when no reader claimed the file. For a job that faulted before `Opened{[]}`,
   the collector sets it from the same routing decision it would make by name, and builds
@@ -502,8 +545,8 @@ are:
   from the collector, through the bin, to verdict: `key` is `CanonicalKey::for_outcome`,
   `location` comes from the entry's `Opened` (for an aggregate at an index never opened,
   from its container's entry 0), and `regions` and `notes` are what the entry sent. A run's
-  files are a `SortedVec<CollectedFile>`, in canonical order. A compile-database job never
-  yields one.
+  files are a `SortedVec<CollectedFile>`, in canonical order. A compile-database or
+  definitions job never yields one.
 - Reasons are a closed enum with no free text; a reason that names a limit, a fault, a
   special file type or a link target carries that closed value. `Details` holds typed
   measurements only.
@@ -513,12 +556,123 @@ are:
   `OutOfScope` adds nothing: it feeds only the FR-5 excluded-path counts.
   Every sum in `verdict_counts` and `sm3_share` saturates at `u64::MAX` rather than
   overflowing.
-- `sm3_share` counts files whose `file_kind` is `Source` (C/C++ in release 1), except
-  `OutOfScope` ones and `NotInCompileDatabase` ones, as `NotChecked` or as `Aggregate`,
-  which leave both counts. The
-  numerator is the files not checked for any reason plus the read files with any
-  unreadable region (`CollectedFile::has_unreadable_region`). A zero denominator gives
-  `None` ("n/a").
+- SM-3 (AD-13, PRD §8 as amended) is `sm3_share(&CollectedFile…) -> Sm3`: a `LineShare`
+  (`lines`), a `FileShare` (`files`), and the lists the report prints beside them. Both
+  shares count only files whose `file_kind` is `Source` (C/C++ in release 1), and both leave
+  out `OutOfScope` files and `NotInCompileDatabase` ones, as `NotChecked` or as `Aggregate`.
+  - The line share's denominator is the lines of every such file. Its numerator is every
+    line of a file not checked, plus, for a `Read` file, the union of its regions' line
+    ranges, each clamped to the file's line count (overlapping regions count once).
+  - A file with no line count adds 0 lines to both counts and its file count to
+    `uncounted_files`: 1 for a single file, and for an `Aggregate` the same count the file
+    share gives it. An incomplete count adds its lines to both counts and 1 to
+    `incomplete_files`. A line share with either above 0 is a lower bound
+    (`LineShare::is_lower_bound`), printed "at least". `Sm3.uncounted` and
+    `Sm3.incomplete` hold the `CanonicalKey` of each such file (one per `Aggregate`, its
+    first file), in canonical order, so the report lists them without computing anything.
+  - The line share is `None` ("n/a") only when its denominator, `uncounted_files` and
+    `incomplete_files` are all 0: with no source file at all, or with only empty ones. With
+    uncounted files and no counted line it is present: "at least 0 of 0, N files
+    uncounted".
+  - The file share is the files not checked for any reason (an `Aggregate` counts its
+    `count`, or `at_least` and never below 1) plus the read files with any unreadable
+    region (`CollectedFile::has_unreadable_region`), over all such files, computed as
+    before Story 1.11. A zero denominator gives `None` ("n/a").
+  - Worked example: a 100-line file read with regions 3–5 and 4–9, a 40-line file
+    `NotChecked{Unparseable}`, an empty file read, a file refused by `FileSize` before any
+    byte was read, a 1,000-line file cut by `FileSize` after 400 lines, and an excluded
+    file. Lines: (7 + 40 + 400) / (100 + 40 + 0 + 400) = 447 / 540, with
+    `uncounted_files` 1 and `incomplete_files` 1, so "at least 447 of 540", listing both
+    cut files. Files: 4 / 5; the excluded file is in neither.
+
+## Macro definitions (AD-14, AD-21, D-15)
+
+- A `MacroDef` is one `#define` as written: `name`; `location`, the `#define` line in its
+  file (input, no frames, the file's path, the line, scope `File`); `params`, `None` for an
+  object-like macro, else `MacroParams{names, variadic}` with the named parameters as
+  written and `variadic` `None`, `Ellipsis` (`...`, used as `__VA_ARGS__`) or `Named(name)`
+  (GNU `name...`); and `body`, the replacement text as written, line continuations joined
+  and comments kept. No `#if` is evaluated or used to choose a definition: every `#define`
+  in the file is reported, whatever directives enclose it, and tried. `#undef` is ignored.
+- `MacroTable` is a `SortedVec<MacroDef>`, ordered by `MacroDef`'s derived `Ord`: name
+  bytes, then `location`, then `params` and `body`. Within one tree, `location` orders as
+  `CanonicalKey` does (input, path, line), so that is name, then canonical order.
+  Duplicates are kept, since the reader tries every definition (D-15).
+- The collector dispatches one `Definitions` job per walked C/C++ file (§ Jobs), with the
+  same `JobFile` as that file's `Route` job. The router identifies the file as it does for
+  a source job, and the one core decode function applies, so the outcome's `file_kind` and
+  its FR-10 encoding reasons come from the same routing decision. A file the router does
+  not identify as C/C++ answers no definitions. Otherwise the worker reads the file's
+  `#define`s, never following an include, and answers with zero or more
+  `WorkerMsg::Definitions`, in file order, then `JobDone{Some(outcome)}`. The only other
+  message it may send is one `Notes{[], [DroppedDefinitions(n)]}` (below); never
+  `Opened`, `Facts`, `Regions`, `EntryDone`, `JobDone{None}` or any other note, and a
+  `Route` job never sends `DroppedDefinitions`. `WorkerMsg::allowed_in(kind)` says which
+  messages each job kind may send; any other is `Fault(BadFrame)` for the job. The outcome
+  is checked with `validate_from_worker` like a route job's, so a `Read` `Source` outcome
+  carries its line count: the count is never used, but one validation serves every job
+  kind.
+- `MacroDef::validate(job, max_len)` is the one predicate for a definition, applied by the
+  worker before it sends and by the collector before it merges. It refuses an empty name
+  (`EmptyName`); a name that is not a C identifier (`NotIdentifier`): valid UTF-8 made of
+  ASCII letters, digits, `_`, `$` (a GNU extension) and non-ASCII characters that are not
+  whitespace or control characters, not starting with a digit; a parameter, or a named
+  variadic, that is not one, or is named `__VA_ARGS__` (`BadParameter`); a parameter named
+  twice, or a named variadic that repeats a parameter (`DuplicateParameter`); a missing
+  line or line 0, no path, any frame, a scope other than `File`, a job that is not a
+  `Definitions` job for the same input and path; a size that cannot fit a frame
+  (`TooLong`); and a definition that cannot be encoded (`Encode`).
+- The worker drops each definition that fails the predicate, oversized ones included,
+  sends the rest, and answers `Read` with `Note::DroppedDefinitions(n)`, `n` the count
+  dropped, so one bad `#define` costs only itself. The collector adds that note to the
+  `CollectedFile` of the same file's `Route` job. A definition that still fails the
+  predicate at the collector is `Fault(BadFrame)` for the job.
+- `encode_definitions` splits the definitions into frames within the frame cap; the
+  collector concatenates them in arrival order. Its size check counts each definition
+  against the larger of the worker and the collector envelope, so anything a worker can
+  send also fits a table frame, and since the worker filtered with the predicate first it
+  never refuses. Every splitter clamps the cap to `u32::MAX`, the largest length the prefix
+  can carry. Validated definitions are what lets `encode_macro_table`, which has no
+  per-definition check of its own, never refuse.
+- The collector keeps a definitions job's definitions only when its outcome is `Read`. Any
+  other outcome, a fault included, loses only that file's definitions; the other files'
+  still merge. A definitions job's outcome never joins the run's outcomes, never counts on
+  a verdict line or in SM-3, and has no `CanonicalKey`.
+- When a definitions job ends by the watchdog or the OS memory cap, every `Route` outcome
+  of that tree, `Read` or `NotChecked`, is marked host-dependent through the existing
+  `Outcome.host_dependent`, since the tree's table may differ on another host (AD-3). The
+  job is retried once as in § Faults and resume, and a successful retry leaves the marking:
+  whether the first try ended depended on the host.
+- `MacroTableBytes` is one run-wide limit on the sum over all trees.
+  `merge_macro_tables(definitions, MacroTableBytes)` merges every tree's definitions in
+  canonical order (input order, then path, by `location`), keeping whole files: it stops
+  before the first file whose definitions would pass the cap, so a file's definitions are
+  all kept or all dropped and the kept files are one canonical prefix of the run. A
+  definition is measured by `MacroDef::table_bytes`, the byte length of its name, its
+  parameter names (the named variadic included) and its body, so the cut never depends on
+  how an input path was typed or on the wire encoding. The result is `MergedTables{tables,
+  cut}`: `table(tree)` is that tree's table (empty when it kept nothing), and `cut` lists
+  every tree that lost definitions. Files are still read; the macros past the cap are not
+  expanded, and `Result.macro_tables_cut` carries `cut`, so the report says so.
+- Delivery: the collector sends a tree's table, after `Settings` and before any source job
+  of that tree, as one or more `CollectorMsg::Macros{tree, definitions, end}` frames split
+  by `encode_macro_table`; `tree` is the input's index, and `end` is true on the last
+  frame only. The table is input structure, never corpus data, and never part of
+  `WorkerSettings`. The rules, which a worker keeps through `MacroTables`:
+  - every definitions job of a tree, and of every tree before it in input order (the
+    run-wide cut is a canonical prefix), commits before the first source job of that tree
+    is sent, so the table is final when it is sent; this barrier serialises the start of
+    each tree;
+  - a worker concatenates a tree's frames in order, and the table is complete at the frame
+    with `end`;
+  - a `Macros` frame for a tree that already has a table starts a new table, which
+    replaces the old one: the old one is dropped at that first frame;
+  - a `Route` job for a tree with no complete table reads without expansion;
+  - a frame holding a definition from another input than `tree` is refused
+    (`ForeignDefinition`): the worker stops, and the collector sees the job fail as a fault;
+  - a replacement worker gets `Settings` and every complete table before its first job.
+- The reader uses the table for parsing only; facts keep the invocation's location and the
+  guards as written (D-15).
 
 ## Compile database (AD-21, RA2-H7, S-F10)
 
@@ -550,9 +704,10 @@ are:
 ## Limits, settings and versions (AD-4, AD-17, AD-22)
 
 - `LIMITS` is the one limits table: names from FR-38, with its memory limit and watchdog
-  each split in two (below), plus `EntryFacts` and `EntryMessageBytes`, each with its flag
-  name, scope, unit and default. The defaults are
-  provisional until the readers measure them.
+  each split in two (below), plus `EntryFacts`, `EntryMessageBytes` and `MacroTableBytes`
+  (a `RunWide` limit on the merged macro tables, § Macro definitions), each with its flag
+  name, scope, unit and default. The defaults are provisional until the readers measure
+  them; Story 1.6 sets them, `MacroTableBytes` included.
 - `Memory` is the per-file buffer the readers count through `WorkBudget`; it is
   deterministic. `WorkerMemoryCap` is the OS cap each worker sets on itself before its
   first job (Job Object or `setrlimit`), a last resort whose hit is host-dependent.
@@ -562,7 +717,9 @@ are:
   like this one are checked once, on the finished table, by `Limits::validate`, so the
   order in which the bin merges flag, project file and default never changes the result.
   `set` checks only the one value; the bin calls `validate` after merging, and
-  deserialization calls it too. A failure is `LimitError::CapBelowMemory`.
+  deserialization calls it too. A failure is `LimitError::CapBelowMemory`. The same check
+  refuses a `MacroTableBytes` above `WorkerMemoryCap` (`LimitError::TableAboveCap`), since
+  every worker holds the tables; Story 1.6 sets the default.
 - Every limit is at least 1. `Limits::set`, `Limits::with` and deserialization refuse 0
   with `LimitError::Zero`, and deserialization refuses unknown fields. `Limits` is read
   through `get`; its fields are private. `EntryMessageBytes` is at most `u32::MAX`, the
@@ -578,6 +735,13 @@ are:
   `UnsupportedVersion{supported, found, reason}` otherwise, naming both versions, with
   reason `OtherMajor` or `NewerMinor`. Every loader checks against them and every report
   states them through `Versions::CURRENT`. Story 6.8 owns the published policy.
+- `JSON_OUTPUT_VERSION` stays 1.0. Story 1.11 changed `Result.sm3` into `Sm3`, with a line
+  and a file share and the uncounted and incomplete lists, and added
+  `Result.macro_tables_cut`. That change is not additive, so the rule above would make it a
+  major bump; by operator decision 1.0 is re-recorded instead, because no output has
+  shipped (as `RULE_SCHEMA_VERSION` 1.0 was). `RULE_SCHEMA_VERSION` stays 1.0, since no
+  `Fact` changed, and its snapshot is unchanged. The worker messages and `Job` carry no
+  version: both ends are the same binary.
 
 ## Verdict types (AD-5, AD-16, AD-19, RA2-M6)
 

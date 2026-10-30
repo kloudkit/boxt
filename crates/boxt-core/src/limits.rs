@@ -18,6 +18,7 @@ closed_enum! {
         WorkerMemoryCap,
         EntryFacts,
         EntryMessageBytes,
+        MacroTableBytes,
     }
 }
 
@@ -139,6 +140,13 @@ pub const LIMITS: &[LimitSpec] = &[
         unit: LimitUnit::Bytes,
         default: 64 * MIB,
     },
+    LimitSpec {
+        name: LimitName::MacroTableBytes,
+        flag: "macro-table-bytes",
+        scope: LimitScope::RunWide,
+        unit: LimitUnit::Bytes,
+        default: 64 * MIB,
+    },
 ];
 
 impl LimitName {
@@ -164,6 +172,7 @@ pub enum LimitError {
     Zero(LimitName),
     AboveMax { name: LimitName, max: u64 },
     CapBelowMemory { cap: u64, memory: u64 },
+    TableAboveCap { table: u64, cap: u64 },
 }
 
 pub const MEMORY_CAP_FACTOR: u64 = 4;
@@ -180,6 +189,12 @@ impl fmt::Display for LimitError {
                 "limit {} ({cap}) must be at least {MEMORY_CAP_FACTOR} times limit {} ({memory})",
                 LimitName::WorkerMemoryCap.flag(),
                 LimitName::Memory.flag()
+            ),
+            LimitError::TableAboveCap { table, cap } => write!(
+                f,
+                "limit {} ({table}) must be at most limit {} ({cap})",
+                LimitName::MacroTableBytes.flag(),
+                LimitName::WorkerMemoryCap.flag()
             ),
         }
     }
@@ -216,6 +231,7 @@ struct LimitValues {
     worker_memory_cap: u64,
     entry_facts: u64,
     entry_message_bytes: u64,
+    macro_table_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -238,6 +254,7 @@ impl Limits {
             LimitName::WorkerMemoryCap => v.worker_memory_cap,
             LimitName::EntryFacts => v.entry_facts,
             LimitName::EntryMessageBytes => v.entry_message_bytes,
+            LimitName::MacroTableBytes => v.macro_table_bytes,
         }
     }
 
@@ -260,6 +277,10 @@ impl Limits {
         if cap < memory.saturating_mul(MEMORY_CAP_FACTOR) {
             return Err(LimitError::CapBelowMemory { cap, memory });
         }
+        let table = self.get(LimitName::MacroTableBytes);
+        if table > cap {
+            return Err(LimitError::TableAboveCap { table, cap });
+        }
         Ok(())
     }
 
@@ -278,6 +299,7 @@ impl Limits {
             LimitName::WorkerMemoryCap => &mut v.worker_memory_cap,
             LimitName::EntryFacts => &mut v.entry_facts,
             LimitName::EntryMessageBytes => &mut v.entry_message_bytes,
+            LimitName::MacroTableBytes => &mut v.macro_table_bytes,
         };
         *slot = value;
     }
@@ -319,6 +341,7 @@ impl Default for Limits {
             worker_memory_cap: LimitName::WorkerMemoryCap.default_value(),
             entry_facts: LimitName::EntryFacts.default_value(),
             entry_message_bytes: LimitName::EntryMessageBytes.default_value(),
+            macro_table_bytes: LimitName::MacroTableBytes.default_value(),
         })
     }
 }
@@ -377,6 +400,26 @@ mod tests {
         let mut json = serde_json::to_value(Limits::default()).unwrap();
         json["extra"] = serde_json::Value::from(1);
         assert!(serde_json::from_value::<Limits>(json).is_err());
+    }
+
+    #[test]
+    fn the_macro_table_cap_fits_the_worker_cap() {
+        let cap = LimitName::WorkerMemoryCap.default_value();
+        let at = Limits::default()
+            .with(LimitName::MacroTableBytes, cap)
+            .unwrap();
+        assert_eq!(at.validate(), Ok(()));
+        let above = Limits::default()
+            .with(LimitName::MacroTableBytes, cap + 1)
+            .unwrap();
+        assert_eq!(
+            above.validate(),
+            Err(LimitError::TableAboveCap {
+                table: cap + 1,
+                cap
+            })
+        );
+        assert_eq!(LimitName::MacroTableBytes.spec().scope, LimitScope::RunWide);
     }
 
     #[test]

@@ -9,8 +9,9 @@ use boxt_core::limits::{LimitName, Limits};
 use boxt_core::location::{InputRef, RelPath, Scope};
 use boxt_core::message::{
     CanonicalKey, CollectorMsg, Decoded, EntryBudget, EntryPath, FRAME_PREFIX_LEN, FrameError, Job,
-    JobFile, JobKind, Note, Region, RegionReason, WorkerMsg, decode_frame, encode_compile_units,
-    encode_frame, faulting_entry, resume_skips,
+    JobFile, JobKind, MacroDef, MacroDefError, MacroTable, Note, Region, RegionReason, WorkerMsg,
+    decode_frame, encode_compile_units, encode_definitions, encode_frame, encode_macro_table,
+    faulting_entry, resume_skips,
 };
 use boxt_core::outcome::{Details, FileOutcome, NotCheckedReason};
 
@@ -40,7 +41,7 @@ where
 fn every_collector_message_round_trips() {
     let msgs = all_collector_msgs();
     let seen: BTreeSet<&str> = msgs.iter().map(collector_variant).collect();
-    assert_eq!(seen, BTreeSet::from(["settings", "job"]));
+    assert_eq!(seen, BTreeSet::from(["settings", "macros", "job"]));
     for msg in &msgs {
         assert_eq!(&round_trip(msg), msg);
     }
@@ -59,6 +60,7 @@ fn every_worker_message_round_trips() {
             "notes",
             "entry_done",
             "compile_units",
+            "definitions",
             "job_done"
         ])
     );
@@ -646,4 +648,307 @@ fn b12_canonical_key_orders_input_path_entry_location() {
             (1, b"a.rpm".as_slice(), vec![0], Some(1)),
         ]
     );
+}
+
+fn many_defs(n: usize) -> Vec<MacroDef> {
+    (0..n)
+        .map(|i| macro_def(&format!("M{i:04}"), "src/config.h", i as u32 + 1, None))
+        .collect()
+}
+
+fn drain<T: serde::de::DeserializeOwned>(frames: &[Vec<u8>], cap: u64) -> Vec<T> {
+    let stream: Vec<u8> = frames.concat();
+    let mut reader = stream.as_slice();
+    let mut out = Vec::new();
+    while let Some(Decoded { msg, payload_len }) = decode_frame::<T, _>(&mut reader, cap).unwrap() {
+        assert!(payload_len <= cap);
+        out.push(msg);
+    }
+    out
+}
+
+#[test]
+fn definitions_split_across_frames_within_the_cap() {
+    let defs = many_defs(200);
+    let cap = 1024;
+    let frames = encode_definitions(&defs, cap).unwrap();
+    assert!(frames.len() > 1);
+    let mut received = Vec::new();
+    for msg in drain::<WorkerMsg>(&frames, cap) {
+        match msg {
+            WorkerMsg::Definitions { definitions } => received.extend(definitions),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(received, defs);
+
+    let empty = encode_definitions(&[], cap).unwrap();
+    assert_eq!(
+        drain::<WorkerMsg>(&empty, cap),
+        vec![WorkerMsg::Definitions {
+            definitions: vec![]
+        }]
+    );
+}
+
+#[test]
+fn a_definition_over_the_cap_is_too_long() {
+    let defs = many_defs(1);
+    let one = encode_definitions(&defs, MAX).unwrap();
+    let len = (one[0].len() - FRAME_PREFIX_LEN) as u64;
+    let fits = encode_definitions(&defs, len + 64).unwrap();
+    assert_eq!(fits.len(), 1);
+    assert!(matches!(
+        encode_definitions(&defs, len - 1),
+        Err(FrameError::TooLong { .. })
+    ));
+    let table = MacroTable::from(defs);
+    let table_frames = encode_macro_table(u32::MAX, &table, len + 64).unwrap();
+    assert_eq!(table_frames.len(), 1);
+}
+
+#[test]
+fn any_definition_a_worker_can_send_fits_the_table_frame() {
+    for n in [1, 7, 60] {
+        let defs = many_defs(n);
+        let job = Job {
+            kind: JobKind::Definitions,
+            input: input(),
+            file: JobFile::InInput(RelPath::try_from("src/config.h").unwrap()),
+            resume_after: None,
+        };
+        for cap in [400, 512, 1024, 4096] {
+            if encode_definitions(&defs, cap).is_err() {
+                continue;
+            }
+            for def in &defs {
+                assert_eq!(def.validate(&job, cap), Ok(()));
+            }
+            let table = MacroTable::from(defs.clone());
+            assert!(encode_macro_table(u32::MAX, &table, cap).is_ok());
+        }
+    }
+}
+
+#[test]
+fn the_macro_table_splits_by_tree_and_concatenates_in_order() {
+    let mut defs = many_defs(150);
+    defs.extend(macro_defs());
+    let table = MacroTable::from(defs);
+    let cap = 1024;
+    let frames = encode_macro_table(3, &table, cap).unwrap();
+    assert!(frames.len() > 1);
+    let mut received = Vec::new();
+    let mut ends = Vec::new();
+    for msg in drain::<CollectorMsg>(&frames, cap) {
+        match msg {
+            CollectorMsg::Macros {
+                tree,
+                definitions,
+                end,
+            } => {
+                assert_eq!(tree, 3);
+                received.extend(definitions.into_vec());
+                ends.push(end);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(received, table.clone().into_vec());
+    assert!(received.windows(2).all(|w| w[0] <= w[1]));
+    let last = ends.pop();
+    assert_eq!(last, Some(true));
+    assert!(ends.iter().all(|end| !end));
+}
+
+#[test]
+fn macro_table_orders_by_name_bytes_then_location_and_keeps_duplicates() {
+    let table = macro_table();
+    let order: Vec<(String, String, u32)> = table
+        .iter()
+        .map(|d| {
+            (
+                String::from_utf8_lossy(d.name.as_bytes()).into_owned(),
+                String::from_utf8_lossy(d.location.path.as_ref().unwrap().as_bytes()).into_owned(),
+                d.location.line.unwrap(),
+            )
+        })
+        .collect();
+    let row = |n: &str, p: &str, l| (n.to_owned(), p.to_owned(), l);
+    assert_eq!(
+        order,
+        vec![
+            row("EMPTY", "src/config.h", 15),
+            row("FOO", "src/a.c", 2),
+            row("FOO", "src/config.h", 3),
+            row("FOO", "src/config.h", 9),
+            row("LOG", "src/config.h", 12),
+            row("RAW", "src/config.h", 16),
+            row("TRACE", "src/config.h", 14),
+        ]
+    );
+    let twice = MacroTable::from(vec![
+        macro_def("FOO", "src/config.h", 3, None),
+        macro_def("FOO", "src/config.h", 3, None),
+    ]);
+    assert_eq!(twice.len(), 2);
+    let json = serde_json::to_string(&table).unwrap();
+    let back: MacroTable = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, table);
+    let mut reversed = table.clone().into_vec();
+    reversed.reverse();
+    let resorted: MacroTable =
+        serde_json::from_str(&serde_json::to_string(&reversed).unwrap()).unwrap();
+    assert_eq!(resorted, table);
+}
+
+#[test]
+fn macro_definitions_are_checked_against_their_job() {
+    let job = Job {
+        kind: JobKind::Definitions,
+        input: input(),
+        file: JobFile::InInput(RelPath::try_from("src/config.h").unwrap()),
+        resume_after: None,
+    };
+    let good = macro_def("FOO", "src/config.h", 3, None);
+    assert_eq!(good.validate(&job, MAX), Ok(()));
+    let with = |f: &dyn Fn(&mut MacroDef)| {
+        let mut def = good.clone();
+        f(&mut def);
+        def.validate(&job, MAX)
+    };
+    assert_eq!(
+        with(&|d| d.location.line = None),
+        Err(MacroDefError::NoLine)
+    );
+    assert_eq!(
+        with(&|d| d.location.line = Some(0)),
+        Err(MacroDefError::NoLine)
+    );
+    assert_eq!(
+        with(&|d| d.location.path = None),
+        Err(MacroDefError::NoPath)
+    );
+    assert_eq!(
+        with(&|d| d.location.frames = frames()),
+        Err(MacroDefError::InContainer)
+    );
+    assert_eq!(
+        with(&|d| d.location.path = Some(RelPath::try_from("src/other.h").unwrap())),
+        Err(MacroDefError::OtherFile)
+    );
+    assert_eq!(
+        with(&|d| d.location.input.index = 1),
+        Err(MacroDefError::OtherFile)
+    );
+    assert_eq!(
+        with(&|d| d.location.scope = function_scope()),
+        Err(MacroDefError::NotFileScope)
+    );
+    let route = Job {
+        kind: JobKind::Route,
+        ..job.clone()
+    };
+    assert_eq!(good.validate(&route, MAX), Err(MacroDefError::OtherFile));
+}
+
+#[test]
+fn definitions_jobs_share_the_source_jobs_file_and_never_resume() {
+    let file = JobFile::InInput(RelPath::try_from("src/main.c").unwrap());
+    let job = |kind, file: JobFile, resume_after| Job {
+        kind,
+        input: input(),
+        file,
+        resume_after,
+    };
+    assert!(job(JobKind::Definitions, file.clone(), None).is_well_formed());
+    assert!(
+        job(
+            JobKind::Definitions,
+            JobFile::WholeInput(RelPath::try_from("main.c").unwrap()),
+            None
+        )
+        .is_well_formed()
+    );
+    assert!(
+        !job(
+            JobKind::Definitions,
+            file.clone(),
+            Some(EntryPath::from([1]))
+        )
+        .is_well_formed()
+    );
+    assert!(
+        !job(
+            JobKind::Definitions,
+            JobFile::Setting(Text::from("/x.json")),
+            None
+        )
+        .is_well_formed()
+    );
+    let definitions = job(JobKind::Definitions, file.clone(), None);
+    assert_eq!(
+        CanonicalKey::for_outcome(&definitions, &EntryPath::job()),
+        None
+    );
+    assert_eq!(
+        CanonicalKey::for_fact(
+            &definitions,
+            &EntryPath::job(),
+            &sample_fact(FactKind::Call)
+        ),
+        None
+    );
+    assert!(
+        CanonicalKey::for_outcome(&job(JobKind::Route, file, None), &EntryPath::job()).is_some()
+    );
+    let mut budget = EntryBudget::new(&small_limits(1, 1));
+    let msg = WorkerMsg::Definitions {
+        definitions: macro_defs(),
+    };
+    assert_eq!(budget.charge_frame(&msg, 1), Ok(()));
+    assert_eq!(
+        budget.charge_frame(&msg, 1),
+        Err(LimitName::EntryMessageBytes)
+    );
+    assert_eq!(msg.entry(), None);
+}
+
+#[test]
+fn each_worker_message_belongs_to_its_job_kind() {
+    for msg in all_worker_msgs() {
+        let kinds: Vec<JobKind> = [
+            JobKind::Route,
+            JobKind::CompileDatabase,
+            JobKind::Definitions,
+        ]
+        .into_iter()
+        .filter(|&k| msg.allowed_in(k))
+        .collect();
+        let expected = match (worker_variant(&msg), &msg) {
+            ("job_done", WorkerMsg::JobDone { outcome: None }) => {
+                vec![JobKind::Route, JobKind::CompileDatabase]
+            }
+            ("job_done", _) => vec![
+                JobKind::Route,
+                JobKind::CompileDatabase,
+                JobKind::Definitions,
+            ],
+            ("compile_units", _) => vec![JobKind::CompileDatabase],
+            ("definitions", _) => vec![JobKind::Definitions],
+            ("notes", WorkerMsg::Notes { notes, .. })
+                if notes.contains(&Note::DroppedDefinitions(2)) =>
+            {
+                vec![JobKind::Definitions]
+            }
+            _ => vec![JobKind::Route],
+        };
+        assert_eq!(kinds, expected, "{msg:?}");
+    }
+    let dropped = WorkerMsg::Notes {
+        entry: EntryPath::from([1]),
+        notes: vec![Note::DroppedDefinitions(1)],
+    };
+    assert!(!dropped.allowed_in(JobKind::Definitions));
+    assert!(!dropped.allowed_in(JobKind::Route));
 }
