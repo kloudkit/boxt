@@ -1,0 +1,252 @@
+{
+  "workspace_members": [
+    "path+file:///src/boxt/crates/boxt#0.0.0",
+    "path+file:///src/boxt/crates/boxt-collector#0.0.0",
+    "path+file:///src/boxt/crates/boxt-core#0.0.0",
+    "path+file:///src/boxt/crates/boxt-read-config#0.0.0",
+    "path+file:///src/boxt/crates/boxt-read-cpp#0.0.0",
+    "path+file:///src/boxt/crates/boxt-read-elf#0.0.0",
+    "path+file:///src/boxt/crates/boxt-read-pkg#0.0.0",
+    "path+file:///src/boxt/crates/boxt-read-service#0.0.0",
+    "path+file:///src/boxt/crates/boxt-render#0.0.0",
+    "path+file:///src/boxt/crates/boxt-rules#0.0.0",
+    "path+file:///src/boxt/crates/boxt-verdict#0.0.0"
+  ],
+  "packages": [
+    {
+      "id": "path+file:///src/boxt/crates/boxt#0.0.0",
+      "name": "boxt",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-collector",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-collector"
+        },
+        {
+          "name": "boxt-render",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-render"
+        },
+        {
+          "name": "boxt-rules",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-rules"
+        },
+        {
+          "name": "boxt-verdict",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-verdict"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-collector#0.0.0",
+      "name": "boxt-collector",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        },
+        {
+          "name": "boxt-read-config",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-read-config"
+        },
+        {
+          "name": "boxt-read-cpp",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-read-cpp"
+        },
+        {
+          "name": "boxt-read-elf",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-read-elf"
+        },
+        {
+          "name": "boxt-read-pkg",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-read-pkg"
+        },
+        {
+          "name": "boxt-read-service",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-read-service"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-core#0.0.0",
+      "name": "boxt-core",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "serde",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": null
+        },
+        {
+          "name": "serde_json",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": null
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-read-config#0.0.0",
+      "name": "boxt-read-config",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-read-cpp#0.0.0",
+      "name": "boxt-read-cpp",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-read-elf#0.0.0",
+      "name": "boxt-read-elf",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-read-pkg#0.0.0",
+      "name": "boxt-read-pkg",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-read-service#0.0.0",
+      "name": "boxt-read-service",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-render#0.0.0",
+      "name": "boxt-render",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        },
+        {
+          "name": "boxt",
+          "kind": "build",
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-rules#0.0.0",
+      "name": "boxt-rules",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        }
+      ]
+    },
+    {
+      "id": "path+file:///src/boxt/crates/boxt-verdict#0.0.0",
+      "name": "boxt-verdict",
+      "version": "0.0.0",
+      "links": null,
+      "dependencies": [
+        {
+          "name": "boxt-core",
+          "kind": null,
+          "target": null,
+          "optional": false,
+          "path": "/src/boxt/crates/boxt-core"
+        }
+      ]
+    }
+  ]
+}

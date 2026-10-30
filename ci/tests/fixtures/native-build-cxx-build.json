@@ -1,0 +1,67 @@
+{
+  "workspace_members": [
+    "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0"
+  ],
+  "packages": [
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0",
+      "name": "boxt-core",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fake-sys@1.0.0",
+      "name": "fake-sys",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#cxx-build@1.0.0",
+      "name": "cxx-build",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    }
+  ],
+  "resolve": {
+    "root": null,
+    "nodes": [
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0",
+        "deps": [
+          {
+            "name": "fake_sys",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#fake-sys@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#fake-sys@1.0.0",
+        "deps": [
+          {
+            "name": "cxx_build",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#cxx-build@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": "build",
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#cxx-build@1.0.0",
+        "deps": []
+      }
+    ]
+  }
+}

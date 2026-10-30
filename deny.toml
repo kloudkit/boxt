@@ -1,0 +1,56 @@
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+  { crate = "openssl", reason = "AD-12: C-backed TLS" },
+  { crate = "openssl-sys", reason = "AD-12: C-backed TLS" },
+  { crate = "native-tls", reason = "AD-12: network and C-backed TLS" },
+  { crate = "reqwest", reason = "AD-12: network client" },
+  { crate = "hyper", reason = "AD-12: network client and server" },
+  { crate = "ureq", reason = "AD-12: network client" },
+  { crate = "tokio", reason = "AD-12: async runtime with sockets" },
+  { crate = "mio", reason = "AD-12: socket event loop" },
+  { crate = "socket2", reason = "AD-12: sockets" },
+  { crate = "async-std", reason = "AD-12: async runtime with sockets" },
+  { crate = "async-net", reason = "AD-12: sockets" },
+  { crate = "smol", reason = "AD-12: async runtime with sockets" },
+  { crate = "h2", reason = "AD-12: network protocol" },
+  { crate = "isahc", reason = "AD-12: network client, C-backed" },
+  { crate = "attohttpc", reason = "AD-12: network client" },
+  { crate = "surf", reason = "AD-12: network client" },
+  { crate = "rustls", reason = "AD-12: network TLS" },
+  { crate = "quinn", reason = "AD-12: network protocol" },
+  { crate = "curl", reason = "AD-12: network client, C-backed" },
+  { crate = "curl-sys", reason = "AD-12: network client, C-backed" },
+  { crate = "libz-sys", reason = "AD-12: C zlib; use flate2 with zlib-rs" },
+  { crate = "libz-ng-sys", reason = "AD-12: C zlib-ng; use flate2 with zlib-rs" },
+  { crate = "cloudflare-zlib-sys", reason = "AD-12: C zlib; use flate2 with zlib-rs" },
+  { crate = "zstd-sys", reason = "AD-12: C zstd; use ruzstd" },
+  { crate = "lzma-sys", reason = "AD-12: C liblzma; use lzma-rust2" },
+  { crate = "liblzma-sys", reason = "AD-12: C liblzma; use lzma-rust2" },
+  { crate = "bzip2-sys", reason = "AD-12: C libbz2; use bzip2 with libbz2-rs-sys" },
+]
+
+[[bans.features]]
+crate = "rpm"
+deny = [
+  "python",
+  "signature-sequoia",
+  "xz-compression",
+  "zstd-compression",
+  "zstdmt",
+]
+
+[[bans.features]]
+crate = "zip"
+deny = [
+  "bzip2-rs",
+  "deflate-flate2-zlib",
+  "deflate-flate2-zlib-ng",
+  "deflate-flate2-zlib-ng-compat",
+  "zstd",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

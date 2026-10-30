@@ -1,0 +1,172 @@
+{
+  "workspace_members": [
+    "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0"
+  ],
+  "packages": [
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0",
+      "name": "boxt-core",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter@1.0.0",
+      "name": "tree-sitter",
+      "version": "1.0.0",
+      "links": "tree-sitter",
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-c@1.0.0",
+      "name": "tree-sitter-c",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-cpp@1.0.0",
+      "name": "tree-sitter-cpp",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-language@1.0.0",
+      "name": "tree-sitter-language",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.0",
+      "name": "cc",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    }
+  ],
+  "resolve": {
+    "root": null,
+    "nodes": [
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0",
+        "deps": [
+          {
+            "name": "tree_sitter",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "tree_sitter_c",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-c@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "tree_sitter_cpp",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-cpp@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter@1.0.0",
+        "deps": [
+          {
+            "name": "cc",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": "build",
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "tree_sitter_language",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-language@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-c@1.0.0",
+        "deps": [
+          {
+            "name": "cc",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": "build",
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "tree_sitter_language",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-language@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-cpp@1.0.0",
+        "deps": [
+          {
+            "name": "cc",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": "build",
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "tree_sitter_language",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-language@1.0.0",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#tree-sitter-language@1.0.0",
+        "deps": []
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#cc@1.0.0",
+        "deps": []
+      }
+    ]
+  }
+}

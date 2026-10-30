@@ -3,11 +3,89 @@
 version = 4
 
 [[package]]
+name = "boxt"
+version = "0.0.0"
+dependencies = [
+ "boxt-collector",
+ "boxt-render",
+ "boxt-rules",
+ "boxt-verdict",
+]
+
+[[package]]
+name = "boxt-collector"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+ "boxt-read-config",
+ "boxt-read-cpp",
+ "boxt-read-elf",
+ "boxt-read-pkg",
+ "boxt-read-service",
+]
+
+[[package]]
 name = "boxt-core"
 version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "boxt-read-config"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+]
+
+[[package]]
+name = "boxt-read-cpp"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+]
+
+[[package]]
+name = "boxt-read-elf"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+]
+
+[[package]]
+name = "boxt-read-pkg"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+]
+
+[[package]]
+name = "boxt-read-service"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+]
+
+[[package]]
+name = "boxt-render"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+]
+
+[[package]]
+name = "boxt-rules"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
+]
+
+[[package]]
+name = "boxt-verdict"
+version = "0.0.0"
+dependencies = [
+ "boxt-core",
 ]
 
 [[package]]

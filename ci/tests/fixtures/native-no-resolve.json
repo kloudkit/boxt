@@ -1,0 +1,21 @@
+{
+  "workspace_members": [
+    "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0"
+  ],
+  "packages": [
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#boxt-core@1.0.0",
+      "name": "boxt-core",
+      "version": "1.0.0",
+      "links": null,
+      "dependencies": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fake-z@1.0.0",
+      "name": "fake-z",
+      "version": "1.0.0",
+      "links": "z",
+      "dependencies": []
+    }
+  ]
+}

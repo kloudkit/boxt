@@ -1,0 +1,13 @@
+[package]
+name = "boxt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+boxt-collector = { path = "../boxt-collector" }
+boxt-render = { path = "../boxt-render" }
+boxt-rules = { path = "../boxt-rules" }
+boxt-verdict = { path = "../boxt-verdict" }

@@ -1,0 +1,15 @@
+[package]
+name = "boxt-collector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+boxt-core = { path = "../boxt-core" }
+boxt-read-config = { path = "../boxt-read-config" }
+boxt-read-cpp = { path = "../boxt-read-cpp" }
+boxt-read-elf = { path = "../boxt-read-elf" }
+boxt-read-pkg = { path = "../boxt-read-pkg" }
+boxt-read-service = { path = "../boxt-read-service" }

@@ -1,0 +1,102 @@
+---
+name: 🦀 CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: 🧹 Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: 🪝 Run pre-commit
+        uses: pre-commit/action@v3.0.1
+
+      - name: 🦀 Install toolchain
+        run: rustup toolchain install
+
+      - name: 🎨 Check formatting
+        run: cargo fmt --all --check
+
+      - name: 📎 Run clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  checks:
+    name: 🛡️ Dependency checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: 🦀 Install toolchain
+        run: rustup toolchain install
+
+      - name: 📦 Install cargo-deny
+        uses: taiki-e/install-action@v2.87.28
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: 🧭 Check crate edges (AD-1)
+        run: ci/check-edges.sh
+
+      - name: 🚫 Check banned crates, features and sources (AD-12)
+        run: cargo deny --locked --config deny.toml check bans sources
+
+      - name: 🧱 Check native code (AD-12)
+        run: ci/check-native.sh
+
+      - name: 🔌 Check for std::net (AD-12)
+        run: ci/check-net.sh
+
+      - name: 🧪 Run check self-tests
+        run: ci/tests/run.sh
+
+  build:
+    name: 🏗️ Build and test ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: 🧰 Install musl-tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: 🦀 Install toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: 🏗️ Build
+        run: cargo build --workspace --locked --release --target ${{ matrix.target }}
+
+      - name: 🧪 Test
+        run: cargo test --workspace --locked --target ${{ matrix.target }}

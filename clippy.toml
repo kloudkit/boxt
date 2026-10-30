@@ -1,0 +1,8 @@
+disallowed-types = [
+  { path = "std::net::TcpStream", reason = "AD-12: no network access" },
+  { path = "std::net::TcpListener", reason = "AD-12: no network access" },
+  { path = "std::net::UdpSocket", reason = "AD-12: no network access" },
+  { path = "std::os::unix::net::UnixStream", reason = "AD-12: no sockets" },
+  { path = "std::os::unix::net::UnixListener", reason = "AD-12: no sockets" },
+  { path = "std::os::unix::net::UnixDatagram", reason = "AD-12: no sockets" },
+]
