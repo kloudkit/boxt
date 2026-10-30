@@ -1,0 +1,89 @@
+---
+name: ⏱️ Worker benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per mode
+        default: "5"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ⏱️ Pool against one process on ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      ACE_URL: https://github.com/DOCGroup/ACE_TAO/releases/download/ACE%2BTAO-6_5_25/ACE-src-6.5.25.tar.gz
+      ACE_SHA256: f9ded60f916a4a1611befb89d673deabb08248aab9d9abf126fcdb1b4dcba966
+      RUNS: ${{ inputs.runs }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: 🧰 Install musl-tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: 🦀 Install toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: 📦 Fetch ACE 6.5.25
+        run: |
+          mkdir -p bench-data/ace
+          curl -fsSL --proto '=https' -o bench-data/ace.tar.gz "$ACE_URL"
+          echo "$ACE_SHA256  bench-data/ace.tar.gz" | sha256sum -c -
+          tar -xzf bench-data/ace.tar.gz -C bench-data/ace
+
+      - name: 🏗️ Build release
+        run: cargo build -p boxt --locked --release --target ${{ matrix.target }}
+
+      - name: ⏱️ Benchmark N workers against N threads (gate)
+        run: |
+          set +e
+          "target/${{ matrix.target }}/release/boxt" bench bench-data/ace/ACE_wrappers --runs "$RUNS" | tee bench-gate.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "### ${{ matrix.target }}: N workers against N threads (gate)"
+            echo '```text'
+            grep -E '^(tree|median)' bench-gate.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: ⏱️ Benchmark one worker against one thread (informative)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          set +e
+          "target/${{ matrix.target }}/release/boxt" bench bench-data/ace/ACE_wrappers --runs "$RUNS" --jobs 1 | tee bench-one.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "### ${{ matrix.target }}: one worker against one thread (informative)"
+            echo '```text'
+            grep -E '^(tree|median)' bench-one.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

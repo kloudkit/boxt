@@ -31,7 +31,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: 📎 Run clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   checks:
     name: 🛡️ Dependency checks
@@ -98,5 +98,16 @@ jobs:
       - name: 🏗️ Build
         run: cargo build --workspace --locked --release --target ${{ matrix.target }}
 
+      - name: 🚫 Check the release binary holds no fault fixture
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/boxt
+          if [ "$RUNNER_OS" = Windows ]; then bin=$bin.exe; fi
+          test -f "$bin" || { echo "no release binary at $bin" >&2; exit 1; }
+          if grep -q 'boxt-fixture-' "$bin"; then
+            echo "a fault fixture reached the release binary" >&2
+            exit 1
+          fi
+
       - name: 🧪 Test
-        run: cargo test --workspace --locked --target ${{ matrix.target }}
+        run: cargo test --workspace --locked --target ${{ matrix.target }} --features boxt/fault-fixtures,boxt-collector/fault-fixtures

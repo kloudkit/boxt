@@ -13,3 +13,17 @@ boxt-read-cpp = { path = "../boxt-read-cpp" }
 boxt-read-elf = { path = "../boxt-read-elf" }
 boxt-read-pkg = { path = "../boxt-read-pkg" }
 boxt-read-service = { path = "../boxt-read-service" }
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[features]
+fault-fixtures = []
+
+[[test]]
+name = "faults"
+harness = false
+required-features = ["fault-fixtures"]

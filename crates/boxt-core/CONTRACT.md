@@ -58,8 +58,8 @@ Every type that crosses a process boundary, or is serialized into a report, uses
 form that any serde format can carry: enums are externally tagged (serde's default; no
 `#[serde(tag)]`, `untagged` or `flatten`), and nothing calls `deserialize_any` unless the
 format is human-readable. A test round-trips every collector and worker message through a
-format that is not self-describing and refuses `deserialize_any`. Story 1.4 may choose any
-payload encoding behind `encode_frame` and `decode_frame`.
+format that is not self-describing and refuses `deserialize_any`. Story 1.4 kept
+`serde_json` behind `encode_frame` and `decode_frame` (§ Worker protocol).
 
 ## Text (AD-11, RA2-L4, RA2-M3)
 
@@ -351,8 +351,10 @@ are:
 - Worker to collector: `Opened`, `Facts`, `Regions`, `Notes`, `EntryDone`, `CompileUnits`,
   `Definitions`, `JobDone`.
 - Every message is one frame: a `u32` little-endian payload length, then the payload,
-  written by `encode_frame` and read by `decode_frame`. The payload is `serde_json` until
-  Story 1.4 chooses an encoding; any serde format works (Wire form).
+  written by `encode_frame` and read by `decode_frame`. The payload is `serde_json`, kept by
+  Story 1.4 pending its CI benchmark against the AD-13 speed bar (the Story 1.4 spike
+  report). Any serde format works (Wire form), so a change of encoding touches only
+  `encode_frame`, `decode_frame` and the splitters' size measure.
 - The frame cap is the `EntryMessageBytes` limit: both ends pass it as `max_len`, in both
   directions. The collector passes that same value to `MacroDef::validate` and to
   `encode_macro_table`, so a table built from validated definitions always fits.
@@ -366,6 +368,13 @@ are:
   reports `Fault(Panic)` for the entry being read, and goes on.
 - Only the parent ever stops a worker. Cancelling a job means killing its worker and
   starting a fresh one.
+- Startup (Story 1.4): the parent runs `current_exe()` with the hidden `worker` subcommand,
+  frames go over the child's stdin and stdout only, and its stderr is inherited. The
+  `Settings` frame is read with the default `EntryMessageBytes` as its cap, since the limits
+  arrive in it. The worker sets its OS memory cap from those limits before it reads a job. A
+  worker that cannot set it exits with `boxt-collector`'s `STARTUP_CAP_EXIT` without
+  answering, and the run stops with a typed error (exit 2). Three failed spawns in a row
+  (`MAX_FAILED_SPAWNS`) also stop the run with a typed error (exit 2).
 
 ### Jobs
 
