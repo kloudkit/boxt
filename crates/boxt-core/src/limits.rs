@@ -19,6 +19,7 @@ closed_enum! {
         EntryFacts,
         EntryMessageBytes,
         MacroTableBytes,
+        SyntaxDepth,
     }
 }
 
@@ -147,6 +148,13 @@ pub const LIMITS: &[LimitSpec] = &[
         unit: LimitUnit::Bytes,
         default: 64 * MIB,
     },
+    LimitSpec {
+        name: LimitName::SyntaxDepth,
+        flag: "syntax-depth",
+        scope: LimitScope::PerFile,
+        unit: LimitUnit::Levels,
+        default: 10_000,
+    },
 ];
 
 impl LimitName {
@@ -232,6 +240,7 @@ struct LimitValues {
     entry_facts: u64,
     entry_message_bytes: u64,
     macro_table_bytes: u64,
+    syntax_depth: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -255,6 +264,7 @@ impl Limits {
             LimitName::EntryFacts => v.entry_facts,
             LimitName::EntryMessageBytes => v.entry_message_bytes,
             LimitName::MacroTableBytes => v.macro_table_bytes,
+            LimitName::SyntaxDepth => v.syntax_depth,
         }
     }
 
@@ -300,6 +310,7 @@ impl Limits {
             LimitName::EntryFacts => &mut v.entry_facts,
             LimitName::EntryMessageBytes => &mut v.entry_message_bytes,
             LimitName::MacroTableBytes => &mut v.macro_table_bytes,
+            LimitName::SyntaxDepth => &mut v.syntax_depth,
         };
         *slot = value;
     }
@@ -342,6 +353,7 @@ impl Default for Limits {
             entry_facts: LimitName::EntryFacts.default_value(),
             entry_message_bytes: LimitName::EntryMessageBytes.default_value(),
             macro_table_bytes: LimitName::MacroTableBytes.default_value(),
+            syntax_depth: LimitName::SyntaxDepth.default_value(),
         })
     }
 }

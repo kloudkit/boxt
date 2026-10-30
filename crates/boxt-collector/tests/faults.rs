@@ -42,6 +42,10 @@ fn main() -> ExitCode {
     let filter: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     let tests: &[(&str, fn())] = &[
         ("ordinary_files_all_read", ordinary_files_all_read),
+        (
+            "a_source_with_facts_and_a_region_is_read",
+            a_source_with_facts_and_a_region_is_read,
+        ),
         ("segfault_ends_only_its_file", segfault_ends_only_its_file),
         ("abort_ends_only_its_file", abort_ends_only_its_file),
         (
@@ -251,6 +255,18 @@ fn run_fixture(fixture: &str, limits: Limits, jobs: usize) -> RunReport {
 
 fn fixture_file(fixture: &str) -> String {
     format!("boxt-fixture-{fixture}.c")
+}
+
+fn a_source_with_facts_and_a_region_is_read() {
+    let source = b"#include <unistd.h>\nint main(void) {\n#ifdef ROOT\n  setuid(0);\n#endif\n  return puts(\"hi\");\n}\n\nstatic char *\nf(a)\n\tchar *a;\n{\n  return a;\n}\n";
+    let special = vec![("facts.c".to_string(), source.to_vec())];
+    let report = run_tree(&tree("facts", &special), Limits::default(), 2);
+    let got = report_for(&report, "facts.c");
+    assert_eq!(
+        got.outcome,
+        Outcome::new(FileOutcome::Read, Some(FileKind::Source)).with_lines(14)
+    );
+    assert_eq!(got.attempts, 1);
 }
 
 fn ordinary_files_all_read() {

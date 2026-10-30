@@ -8,7 +8,7 @@ Story 1.1 spine review's `S-F` ids name where each rule comes from.
 `boxt-core` depends on no workspace crate (AD-1). Its dependencies are pure-Rust crates
 from the spine's Stack table, at the Stack versions, each added by the story that needs it.
 Story 1.1 adds `serde` (with `derive`) and `serde_json` only; base64 for `Text` is
-hand-written.
+hand-written. Story 1.5 adds `encoding_rs`, for `decode` alone.
 
 ## Lists and order (AD-6)
 
@@ -75,6 +75,26 @@ format that is not self-describing and refuses `deserialize_any`. Story 1.4 kept
   `deserialize_byte_buf` and `from_bytes`.
 - Nothing in `boxt-core`, the readers, the rules or verdict escapes `Text`. Each renderer
   escapes it once.
+
+### Decoding (FR-10, RA2-M4)
+
+`decode::decode(bytes, declared) -> Result<Decoded{text, encoding}, NotCheckedReason>` is
+the one decode function; only the C/C++ reader (and the definitions pass, through it)
+decodes.
+
+- Undeclared: a file starting with a UTF-32 mark (`FF FE 00 00` or `00 00 FE FF`) is
+  `EncodingUndeclared`; one starting with `FF FE` or `FE FF` is UTF-16 LE or BE, its mark
+  dropped; any other file is UTF-8. Anything that does not decode is `EncodingUndeclared`. A
+  Latin-1 or code-page file is never guessed.
+- Declared: `Utf8`, `Utf16Le`, `Utf16Be` (its own mark dropped), `Latin1` (byte to code
+  point) or `WindowsCodePage(n)`: 65001 UTF-8, 1200 and 1201 UTF-16, 28591 Latin-1, 20127
+  ASCII, and the WHATWG encodings in `encoding_rs` for 866, 874, 932, 936, 949, 950,
+  1250–1258, 10000, 10007, 20866, 20932, 21866, 28592–28598, 28603, 28605, 38598, 50220,
+  51932 and 54936. Bytes that do not decode, or a code page not listed, are
+  `InvalidForDeclaredEncoding`. No replacement character is ever inserted.
+- A UTF-8 byte-order mark stays in `text` as U+FEFF, so the decoded text has exactly
+  `line_count(bytes, declared)` lines in every case; the reader treats it as blank space.
+  Lines and every byte offset a reader uses refer to the decoded text.
 
 ## Location and frames (AD-15, RA2-H6)
 
@@ -147,9 +167,9 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
 
 | Kind | From | Scope | Path | Line | Value forms |
 | --- | --- | --- | --- | --- | --- |
-| `call` | source | `Function{qualified_name, signature}` inside a function, else `File` | file | the call's first line | `callee` as written, qualification included; `args` each argument's text as written, line ends as LF |
+| `call` | source | `Function{qualified_name, signature}` inside a function, else `File` | file | the call's first line | `callee` as written, qualification included, whitespace normalized (§ The C/C++ reader); `args` each literal argument's text as written, line ends as LF, else empty |
 | `include` | source | as `call` | file | the directive's line | `target` without its delimiters; `system` is true for `<…>` |
-| `string_literal` | source | as `call` | file | the literal's first line | the literal's bytes with C escapes decoded, prefix and quotes dropped; adjacent literals stay separate facts |
+| `string_literal` | source | as `call` | file | the literal's first line | the literal's bytes with C escapes decoded, prefix and quotes dropped; adjacent literals are one fact, their values joined (§ The C/C++ reader) |
 | `string_literal` | binary | `File` | file | none | each NUL-terminated run of at least 4 printable bytes (ASCII 0x20 to 0x7E) from the `.rodata` and `.data` sections only, without the NUL |
 | `config_key` | config | `ConfigKey(key)` | file | the key's line | `key` is the key's path, its segments joined with `.` (INI: `section.key`); built only by `config_key_path`: a name segment that is empty, starts with `@`, or holds `.`, `[` or a control character (CR included) is written `["…"]` with JSON string escaping, an array element is `[n]` (0-based), and an XML attribute is `@name` (quoted as `["@…"]` by the same rule); `[n]` and `["…"]` attach to the segment before them with no dot, and a bare segment after any segment is preceded by `.` (`a[0].b`, `a["x.y"].c`); `value` is the scalar as written after unquoting, `None` for a non-scalar |
 | `guard_region` | source | as `call`, at the branch's directive | file | the branch's directive line | `end_line` is the line of the directive that ends the branch |
@@ -198,9 +218,18 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   `[#ifdef B*]`, where `*` marks `holds_code`.
 - `has_alternative` belongs to the chain: true when another branch of that chain holds a
   token other than whitespace, a comment or `#error`.
+- A frame's `text` runs from the `#` through the condition (`#if`, `#elif`), the name
+  (`#ifdef` family) or the keyword (`#else`), with line splices removed, each comment
+  replaced by a space, and each run of whitespace collapsed to one space. Its
+  `identifiers` are the identifiers after the keyword, outside literals, without
+  `defined`, sorted and without repeats.
 - A chain's `region` is the `RegionId` of the branch holding the code: the index of that
-  branch within its file, so the pair of the fact's file (input, frames, path) and the
-  `RegionId` is unique in a run. A `GuardRegion` fact describes each branch once.
+  branch within its file, counting branches in the order of their directives from 0, so
+  the pair of the fact's file (input, frames, path) and the `RegionId` is unique in a run.
+  A `GuardRegion` fact describes each branch once: its guards are the chains enclosing the
+  directive, then the branch's own chain; `end_line` is the line of the next `#elif`,
+  `#else` or `#endif` of the chain, or the file's last line when the chain is never
+  closed.
 - Readers never classify a guard (AD-18).
 
 ### The rule-schema snapshot (AD-2)
@@ -283,23 +312,26 @@ are:
   `Link` `NotChecked{Symlink(Unresolved)}` and a `Special` entry `NotChecked{SpecialFile}`;
   neither is followed or read.
 - `ReadCtx` holds the base `Location` of the file being read (input, frames, path; line
-  `None`, scope `File`, or the script's scope), the file's declared `encoding`, and one
-  `WorkBudget`. Readers build each fact's location with `ctx.at(line, scope)`. Readers never
-  see an encoding pattern: the router resolves the declaration with
-  `WorkerSettings::resolve_encoding`, the first declaration whose pattern matches the file's
-  path in its innermost root, and passes only the result (`None` when nothing matches). It
-  matches as the collector does: byte-exact, with no case folding, except AD-15's Windows
-  fallback for paths on disk, which encoding declarations follow too; never inside a
-  container. The budget is private: a reader can only spend it, through `work`, `buffer`,
-  `release`, `file_size`, `entry` and `decompression`, and read it through
-  `budget()`. Only the router builds a context with a
-  given budget (`with_budget`) and takes it back (`into_budget`).
+  `None`, scope `File`, or the script's scope), the file's declared `encoding`, one
+  `WorkBudget`, and optionally the tree's `MacroTable`, borrowed: `with_macros(&table)`
+  attaches it and `macros()` reads it. With none attached the C/C++ reader expands nothing.
+  Until Story 1.6 delivers tables the worker attaches none. Readers build each fact's
+  location with `ctx.at(line, scope)`. Readers never see an encoding pattern: the router
+  resolves the declaration with `WorkerSettings::resolve_encoding`, the first declaration
+  whose pattern matches the file's path in its innermost root, and passes only the result
+  (`None` when nothing matches). It matches as the collector does: byte-exact, with no case
+  folding, except AD-15's Windows fallback for paths on disk, which encoding declarations
+  follow too; never inside a container. The budget is private: a reader can only spend it,
+  through `work`, `buffer`, `release`, `file_size`, `entry` and `decompression`, and read it
+  through `budget()`. Only the router builds a context with a given budget (`with_budget`)
+  and takes it back (`into_budget`).
 - `WorkBudget` counts against `Limits`: `work` steps (`Work`; tree-sitter steps through its
   progress callback), `buffer` and `release` for bytes held in memory (`Memory`, the counted
-  per-file buffer), and depth. Each file and entry gets a fresh budget for work and bytes; a
-  container's entries get `nested()`, one level deeper, which fails past `ArchiveDepth`. A
-  value over its limit is `Exceeded{limit, value, max}`, which becomes
-  `NotChecked{LimitExceeded(limit), Measured{value, limit: max}}`.
+  per-file buffer), and depth. `syntax_depth(depth)` checks one syntax tree's depth against
+  `SyntaxDepth`; it is a maximum, not a running total. Each file and entry gets a fresh
+  budget for work and bytes; a container's entries get `nested()`, one level deeper, which
+  fails past `ArchiveDepth`. A value over its limit is `Exceeded{limit, value, max}`, which
+  becomes `NotChecked{LimitExceeded(limit), Measured{value, limit: max}}`.
 - `file_size(size)` refuses a file or entry over `FileSize`, before any of it is read.
 - The decompression ratio is decompressed bytes over compressed bytes, per compressed
   stream (a gzip, xz, bzip2 or zstd stream, a zip entry's deflate data). The reader takes
@@ -333,12 +365,70 @@ are:
   | `file_size` | the router, on a leaf file and on each entry before it reads it; never on a container's own stream, which is bounded by its entries |
   | `buffer`, `release` | the router for every buffer it fills and hands a reader (a whole leaf file, a buffered nested zip); a reader for its own allocations only |
   | `work` | the reader, for its own steps |
+  | `syntax_depth` | the C/C++ reader, on every tree it parses |
   | `decompression`, `produced` | the reader that decompresses, for streams it reads itself; for an entry's lazily read data, the `ChargedRead` the container hands out, read by the router |
 
 - `FactSink` takes facts, regions and notes. The router's sink charges the entry's
   `EntryBudget`; when it refuses, the reader stops and returns the `Exceeded` it got. A
   reader that stops for any reason returns `NotRead`, and the router discards what the
-  entry sent.
+  entry sent. The router batches facts into `Facts` frames of at most 1,024 facts, then
+  sends the entry's regions in `Regions` frames of at most 1,024 regions, in line order.
+  The collector refuses as `Fault(BadFrame)` a `Facts` frame after a `Regions` frame, a
+  region that does not start after the last one received, and any region on an outcome
+  with no line count. When its own `EntryBudget` refuses, the entry's outcome is the
+  budget's `exceeded_outcome`, or `Fault(BadFrame)` when the worker reported `Read`.
+
+### The C/C++ reader (Story 1.5)
+
+- **Outcome.** A file is `Read`, with `Regions` for the lines no pass read; `NotChecked`
+  with the decode reason, `Unparseable` when no line holding code outside a directive was
+  read by any pass (a file of comments and directives only is `Read`), or `LimitExceeded`
+  (`Work`, `SyntaxDepth`, or an `EntryBudget` limit). A file not read yields no fact. Work
+  is every parse (1, plus each tree-sitter progress callback) and every expansion step;
+  each parsed tree is checked against `SyntaxDepth`, by its measured depth. Nothing depends
+  on time. It charges `buffer` for the file-sized buffers of each pass and expansion
+  attempt while it holds them, and for the facts it holds until the sink takes them.
+- **Grammar.** `.c` (lower case) is C, every other listed extension C++, `.C` included. A
+  `.h` file, or one whose name has no listed extension, is read as C and, when C leaves an
+  unreadable line, again as C++; the reading with fewer unreadable lines is kept, C on a
+  tie.
+- **Passes.** Guards come from a directive scan of the decoded text (T1), never from
+  tree-sitter. Generic macro-idiom shapes are blanked at equal length before parsing (T3;
+  the shape table names no project). A file whose tree has an `ERROR` or `MISSING` node, a
+  directive chain whose brackets do not balance in some branch, or a chain whose tree
+  extent disagrees with the scan (T4) is damaged: it is reparsed once per branch index with
+  the other branches and every directive blanked, offsets kept, then once more for each
+  combination of branches still not kept, until every non-empty branch was kept (T2). A
+  line is unreadable when no pass kept and read it; a line no pass kept that is not a
+  directive line is unreadable. With a macro table, a file still damaged is expanded on
+  its unreadable lines and the last code line before each unreadable run, trying the
+  k-th definition of every name for k up to 4, plus the fixed standard-header list
+  (`PRI*`/`SCN*`, `noreturn`, `va_arg`, `offsetof`); a line is unreadable only when no
+  attempt reads it (T5). No `#if` condition is read.
+- **Facts.** Values, lines, scopes and guards come from the decoded text, never from
+  rewritten or expanded text. A fact found only in an expansion attempt keeps its
+  invocation's location; one whose callee lies inside an expansion is dropped, and a
+  non-literal or expanded argument is the empty `Text`. Each function-like invocation that
+  T3 or T5 replaced, on a readable line, is itself a `Call` with its literal arguments.
+  `callee` is the callee's text with comments and line splices dropped, each run of
+  whitespace collapsed to one space and none around `::`. `Call.args` keep each literal
+  argument as written, trimmed, with CR LF as LF: a number with no user-defined suffix,
+  optionally signed, one or more adjacent string or character literals, `true`, `false` or
+  `nullptr`. Any other argument (`NULL` and user-defined literals included) is the empty
+  `Text`. Calls and invocations use this one rule. `Include` comes from the scan, for
+  `#include` and `#include_next` with `<…>` or `"…"`; a computed include yields none.
+  `StringLiteral` decodes `\n \t \r \v \f \a \b \e`, octal, `\x`, `\u` and `\U` escapes (an
+  octal or `\x` escape up to 0xFF in a narrow literal is one byte; any other escape is its
+  code point as UTF-8; an escape that is no code point, such as a surrogate or one past
+  U+10FFFF, stays as written), and keeps a raw string's body with CR LF as LF. Adjacent
+  literals that tree-sitter joins into one concatenation are one `StringLiteral`, at the
+  first piece's line, whose value is the pieces' values joined; macro names between the
+  pieces add nothing. String literals in `#if` conditions, `#define` bodies, `#include` and
+  `extern "C"` yield none.
+- **Function scope.** `qualified_name` prefixes the declarator's name with the names of
+  the enclosing namespaces and classes, joined by `::`. `signature` is `(` + the
+  parameters joined by `, ` + `)`, each parameter written without its name and default
+  value; a variadic parameter is `...`, an empty list `()`.
 
 ## Worker protocol (AD-3, AD-14, AD-17, RA2-C3, RA2-H4, RA2-M1, RA2-M8)
 
@@ -713,10 +803,12 @@ are:
 ## Limits, settings and versions (AD-4, AD-17, AD-22)
 
 - `LIMITS` is the one limits table: names from FR-38, with its memory limit and watchdog
-  each split in two (below), plus `EntryFacts`, `EntryMessageBytes` and `MacroTableBytes`
-  (a `RunWide` limit on the merged macro tables, § Macro definitions), each with its flag
-  name, scope, unit and default. The defaults are provisional until the readers measure
-  them; Story 1.6 sets them, `MacroTableBytes` included.
+  each split in two (below), plus `EntryFacts`, `EntryMessageBytes`, `MacroTableBytes` (a
+  `RunWide` limit on the merged macro tables, § Macro definitions) and `SyntaxDepth`
+  (`syntax-depth`, per file: the deepest syntax tree the C/C++ reader accepts, provisional
+  default 10,000 levels; Story 1.5), each with its flag name, scope, unit and default. The
+  defaults are provisional until the readers measure them; Story 1.6 sets them,
+  `MacroTableBytes` included.
 - `Memory` is the per-file buffer the readers count through `WorkBudget`; it is
   deterministic. `WorkerMemoryCap` is the OS cap each worker sets on itself before its
   first job (Job Object or `setrlimit`), a last resort whose hit is host-dependent.

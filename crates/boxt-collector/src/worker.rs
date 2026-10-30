@@ -2,17 +2,19 @@ use std::io::{self, BufWriter, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitCode;
 
-use boxt_core::fact::FileKind;
+use boxt_core::fact::{Fact, FileKind};
 use boxt_core::limits::{LimitName, Limits};
-use boxt_core::location::Scope;
+use boxt_core::location::{Location, Scope};
 use boxt_core::message::{
-    CollectorMsg, EntryPath, Job, JobKind, WorkerMsg, decode_frame, encode_frame,
+    CollectorMsg, EntryBudget, EntryPath, FrameError, Job, JobKind, Note, Region, WorkerMsg,
+    decode_frame, encode_frame,
 };
 use boxt_core::outcome::{Details, FaultKind, FileOutcome, NotCheckedReason, Outcome, line_count};
+use boxt_core::read::{Exceeded, FactSink, NotRead, ReadCtx, Reader};
 use boxt_core::settings::WorkerSettings;
-use boxt_read_cpp::Grammar;
+use boxt_read_cpp::{CppReader, Grammar};
 
-use crate::path::job_path;
+use crate::path::{declared_for, job_path, text_from_path};
 use crate::{alloc, os};
 
 pub const WORKER_SUBCOMMAND: &str = "worker";
@@ -169,8 +171,11 @@ fn route(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Resu
         fixtures::trigger(name, out, max_len);
     }
 
-    let Some(grammar) = grammar else {
+    if grammar.is_none() {
         return Ok(not_checked(NotCheckedReason::NoReader, None));
+    }
+    let Some(path) = path else {
+        return Ok(not_checked(NotCheckedReason::NoReader, file_kind));
     };
     let Some(on_disk) = job_path(job) else {
         return Ok(not_checked(NotCheckedReason::NoReader, file_kind));
@@ -192,12 +197,137 @@ fn route(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Resu
         }
         Err(_) => return Ok(not_checked(NotCheckedReason::NoReader, file_kind)),
     };
-    let lines = line_count(&bytes, None);
-    let outcome = match boxt_read_cpp::parse(&bytes, grammar) {
-        Ok(_) => Outcome::new(FileOutcome::Read, file_kind),
-        Err(_) => not_checked(NotCheckedReason::Unparseable, file_kind),
+    let on_disk_text = text_from_path(&on_disk);
+    let encoding = settings.resolve_encoding(|p| declared_for(p, &on_disk_text));
+    let lines = line_count(&bytes, encoding);
+    let location = Location::file(job.input.clone(), Vec::new(), path);
+    let mut ctx = ReadCtx::new(location, &settings.limits, encoding);
+    let mut sink = FrameSink::new(out, &settings.limits);
+    let read = CppReader.read(&bytes, &mut ctx, &mut sink);
+    let read = read.and_then(|()| sink.flush().map_err(NotRead::from));
+    if let Some(error) = sink.failed.take() {
+        return Err(error);
+    }
+    let file = match read {
+        Ok(()) => FileOutcome::Read,
+        Err(not_read) => not_read.outcome(),
     };
-    Ok(outcome.with_lines(lines))
+    Ok(Outcome::new(file, file_kind).with_lines(lines))
+}
+
+const FACTS_PER_FRAME: usize = 1024;
+const REGIONS_PER_FRAME: usize = 1024;
+
+struct FrameSink<'w, W: Write> {
+    out: &'w mut W,
+    budget: EntryBudget,
+    max_len: u64,
+    facts: Vec<Fact>,
+    regions: Vec<Region>,
+    failed: Option<io::Error>,
+}
+
+impl<'w, W: Write> FrameSink<'w, W> {
+    fn new(out: &'w mut W, limits: &Limits) -> Self {
+        FrameSink {
+            out,
+            budget: EntryBudget::new(limits),
+            max_len: limits.get(LimitName::EntryMessageBytes),
+            facts: Vec::new(),
+            regions: Vec::new(),
+            failed: None,
+        }
+    }
+
+    fn over(&self) -> Exceeded {
+        match self.budget.exceeded_outcome() {
+            Some(FileOutcome::NotChecked {
+                reason: NotCheckedReason::LimitExceeded(limit),
+                details: Details::Measured { value, limit: max },
+            }) => Exceeded { limit, value, max },
+            _ => Exceeded {
+                limit: LimitName::EntryMessageBytes,
+                value: self.max_len.saturating_add(1),
+                max: self.max_len,
+            },
+        }
+    }
+
+    fn send(&mut self, msg: &WorkerMsg) -> Result<(), Exceeded> {
+        if self.failed.is_some() {
+            return Err(self.over());
+        }
+        let frame = match encode_frame(msg, self.max_len) {
+            Ok(frame) => frame,
+            Err(FrameError::TooLong { len, .. }) => {
+                let _ = self.budget.charge_frame(msg, len);
+                return Err(self.over());
+            }
+            Err(e) => {
+                self.failed = Some(io::Error::other(e));
+                return Err(self.over());
+            }
+        };
+        let payload_len = frame.len().saturating_sub(4) as u64;
+        if self.budget.charge_frame(msg, payload_len).is_err() {
+            return Err(self.over());
+        }
+        if let Err(e) = self.out.write_all(&frame) {
+            self.failed = Some(e);
+            return Err(self.over());
+        }
+        Ok(())
+    }
+
+    fn flush_facts(&mut self) -> Result<(), Exceeded> {
+        if self.facts.is_empty() {
+            return Ok(());
+        }
+        let msg = WorkerMsg::Facts {
+            entry: EntryPath::job(),
+            facts: std::mem::take(&mut self.facts),
+        };
+        self.send(&msg)
+    }
+
+    fn flush_regions(&mut self) -> Result<(), Exceeded> {
+        if self.regions.is_empty() {
+            return Ok(());
+        }
+        let msg = WorkerMsg::Regions {
+            entry: EntryPath::job(),
+            regions: std::mem::take(&mut self.regions),
+        };
+        self.send(&msg)
+    }
+
+    fn flush(&mut self) -> Result<(), Exceeded> {
+        self.flush_facts()?;
+        self.flush_regions()
+    }
+}
+
+impl<W: Write> FactSink for FrameSink<'_, W> {
+    fn fact(&mut self, fact: Fact) -> Result<(), Exceeded> {
+        self.facts.push(fact);
+        if self.facts.len() >= FACTS_PER_FRAME {
+            self.flush_facts()?;
+        }
+        Ok(())
+    }
+
+    fn region(&mut self, region: Region) -> Result<(), Exceeded> {
+        self.flush_facts()?;
+        self.regions.push(region);
+        if self.regions.len() >= REGIONS_PER_FRAME {
+            self.flush_regions()?;
+        }
+        Ok(())
+    }
+
+    fn note(&mut self, _: Note) -> Result<(), Exceeded> {
+        Ok(())
+    }
 }
 
 fn read_bounded(path: &std::path::Path, max: u64) -> io::Result<Result<Vec<u8>, u64>> {
@@ -286,5 +416,274 @@ mod fixtures {
         let _ = out.write_all(&frame[..frame.len() / 2]);
         let _ = out.flush();
         std::process::exit(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use boxt_core::Text;
+    use boxt_core::location::{InputRef, RelPath};
+    use boxt_core::message::{Job, JobFile, JobKind, WorkerMsg, decode_frame};
+    use boxt_core::settings::{Encoding, EncodingDecl, PathPattern};
+
+    use super::*;
+    use crate::path::text_from_path;
+
+    struct Dir(std::path::PathBuf);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn dir(name: &str, files: &[(&str, &[u8])]) -> Dir {
+        let root = std::env::temp_dir().join(format!("boxt-worker-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (file, body) in files {
+            std::fs::write(root.join(file), body).unwrap();
+        }
+        Dir(root)
+    }
+
+    fn job(root: &Dir, file: &str) -> Job {
+        Job {
+            kind: JobKind::Route,
+            input: InputRef {
+                index: 0,
+                given: text_from_path(&root.0),
+            },
+            file: JobFile::InInput(RelPath::new(Text::from(file)).unwrap()),
+            resume_after: None,
+        }
+    }
+
+    fn settings(limits: Limits, encodings: Vec<EncodingDecl>) -> WorkerSettings {
+        WorkerSettings { limits, encodings }
+    }
+
+    fn messages(bytes: &[u8]) -> Vec<WorkerMsg> {
+        let mut input = bytes;
+        let mut out = Vec::new();
+        while let Some(decoded) = decode_frame::<WorkerMsg, _>(&mut input, u64::MAX).unwrap() {
+            out.push(decoded.msg);
+        }
+        out
+    }
+
+    fn outcome(msgs: &[WorkerMsg]) -> Outcome {
+        match msgs.last() {
+            Some(WorkerMsg::JobDone {
+                outcome: Some(outcome),
+            }) => outcome.clone(),
+            other => panic!("no JobDone: {other:?}"),
+        }
+    }
+
+    const SOURCE: &[u8] = b"#include <unistd.h>\nint main(void) {\n#ifdef ROOT\n  setuid(0);\n#endif\n  return puts(\"hi\");\n}\n\nstatic char *\nf(a)\n\tchar *a;\n{\n  return a;\n}\n";
+
+    #[test]
+    fn a_source_job_streams_facts_and_regions_then_its_outcome() {
+        let root = dir("stream", &[("a.c", SOURCE)]);
+        let mut out = Vec::new();
+        run_job(
+            &job(&root, "a.c"),
+            &settings(Limits::default(), Vec::new()),
+            &mut out,
+        )
+        .unwrap();
+        let msgs = messages(&out);
+        assert!(matches!(msgs[0], WorkerMsg::Opened { .. }));
+        let facts: Vec<&Fact> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                WorkerMsg::Facts { facts, .. } => Some(facts),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(facts.iter().all(|f| f.validate().is_ok()));
+        assert!(facts.iter().any(|f| matches!(f,
+            Fact::Call { callee, .. } if callee == &Text::from("setuid"))));
+        assert!(facts.iter().any(|f| matches!(f, Fact::Include { .. })));
+        assert!(msgs.iter().any(|m| matches!(m,
+            WorkerMsg::Regions { regions, .. } if !regions.is_empty())));
+        let done = outcome(&msgs);
+        assert_eq!(done.file, FileOutcome::Read);
+        assert_eq!(done.file_kind, Some(FileKind::Source));
+        assert_eq!(done.lines.map(|l| (l.lines, l.complete)), Some((14, true)));
+    }
+
+    #[test]
+    fn the_declared_encoding_reaches_the_reader() {
+        let latin = b"const char *s = \"caf\xe9\";\n";
+        let root = dir("encoding", &[("a.c", latin)]);
+        let mut out = Vec::new();
+        run_job(
+            &job(&root, "a.c"),
+            &settings(Limits::default(), Vec::new()),
+            &mut out,
+        )
+        .unwrap();
+        let undeclared = outcome(&messages(&out));
+        assert_eq!(
+            undeclared.file,
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::EncodingUndeclared,
+                details: Details::None
+            }
+        );
+        assert_eq!(undeclared.lines.map(|l| l.lines), Some(1));
+
+        let decl = EncodingDecl {
+            pattern: PathPattern {
+                base: text_from_path(&root.0),
+                pattern: Text::from("**/*.c"),
+            },
+            encoding: Encoding::Latin1,
+        };
+        let mut out = Vec::new();
+        run_job(
+            &job(&root, "a.c"),
+            &settings(Limits::default(), vec![decl]),
+            &mut out,
+        )
+        .unwrap();
+        let msgs = messages(&out);
+        assert_eq!(outcome(&msgs).file, FileOutcome::Read);
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, WorkerMsg::Facts { facts, .. }
+            if facts.iter().any(|f| matches!(f,
+                Fact::StringLiteral { value, .. } if value == &Text::from("café")))))
+        );
+    }
+
+    #[test]
+    fn a_fact_count_over_the_entry_limit_is_not_checked() {
+        let root = dir("facts", &[("a.c", SOURCE)]);
+        let limits = Limits::default().with(LimitName::EntryFacts, 2).unwrap();
+        let mut out = Vec::new();
+        run_job(&job(&root, "a.c"), &settings(limits, Vec::new()), &mut out).unwrap();
+        let done = outcome(&messages(&out));
+        assert!(matches!(
+            done.file,
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::LimitExceeded(LimitName::EntryFacts),
+                ..
+            }
+        ));
+        assert_eq!(done.lines.map(|l| l.lines), Some(14));
+    }
+
+    #[test]
+    fn many_facts_go_out_in_bounded_frames() {
+        let mut src = String::from("void f(void) {\n");
+        for i in 0..1500 {
+            src += &format!("  g({i});\n");
+        }
+        src += "}\n";
+        let root = dir("many", &[("a.c", src.as_bytes())]);
+        let mut out = Vec::new();
+        run_job(
+            &job(&root, "a.c"),
+            &settings(Limits::default(), Vec::new()),
+            &mut out,
+        )
+        .unwrap();
+        let msgs = messages(&out);
+        let sizes: Vec<usize> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                WorkerMsg::Facts { facts, .. } => Some(facts.len()),
+                _ => None,
+            })
+            .collect();
+        assert!(sizes.len() >= 2, "{sizes:?}");
+        assert!(sizes.iter().all(|&n| n <= FACTS_PER_FRAME));
+        let location = Location::file(
+            job(&root, "a.c").input,
+            Vec::new(),
+            RelPath::new(Text::from("a.c")).unwrap(),
+        );
+        let mut ctx = ReadCtx::new(location, &Limits::default(), None);
+        let mut direct = Vec::new();
+        struct Collect<'a>(&'a mut Vec<Fact>);
+        impl FactSink for Collect<'_> {
+            fn fact(&mut self, fact: Fact) -> Result<(), Exceeded> {
+                self.0.push(fact);
+                Ok(())
+            }
+            fn region(&mut self, _: Region) -> Result<(), Exceeded> {
+                Ok(())
+            }
+            fn note(&mut self, _: Note) -> Result<(), Exceeded> {
+                Ok(())
+            }
+        }
+        CppReader
+            .read(src.as_bytes(), &mut ctx, &mut Collect(&mut direct))
+            .unwrap();
+        assert_eq!(sizes.iter().sum::<usize>(), direct.len());
+        assert_eq!(outcome(&msgs).file, FileOutcome::Read);
+    }
+
+    fn big_fact() -> Fact {
+        let location = Location::file(
+            InputRef {
+                index: 0,
+                given: Text::from("/src"),
+            },
+            Vec::new(),
+            RelPath::new(Text::from("a.c")).unwrap(),
+        );
+        Fact::StringLiteral {
+            file_kind: FileKind::Source,
+            location: location.at(Some(1), Scope::File),
+            value: Text::from("x".repeat(4096)),
+            guards: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_frame_over_the_cap_is_never_sent() {
+        let limits = Limits::default()
+            .with(LimitName::EntryMessageBytes, 1024)
+            .unwrap();
+        let mut out = Vec::new();
+        let mut sink = FrameSink::new(&mut out, &limits);
+        sink.fact(big_fact()).unwrap();
+        let over = sink.flush().unwrap_err();
+        assert_eq!(over.limit, LimitName::EntryMessageBytes);
+        assert_eq!(over.max, 1024);
+        assert!(over.value > 1024);
+        assert!(sink.failed.is_none());
+        assert!(out.is_empty());
+    }
+
+    struct Broken;
+
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_write_stops_the_reader_and_is_kept() {
+        let mut out = Broken;
+        let mut sink = FrameSink::new(&mut out, &Limits::default());
+        sink.fact(big_fact()).unwrap();
+        assert!(sink.flush().is_err());
+        assert_eq!(
+            sink.failed.as_ref().map(io::Error::kind),
+            Some(io::ErrorKind::BrokenPipe)
+        );
+        assert!(sink.fact(big_fact()).is_ok());
+        assert!(sink.flush().is_err());
     }
 }

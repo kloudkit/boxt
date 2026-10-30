@@ -5,7 +5,7 @@ use std::rc::Rc;
 use crate::fact::{Fact, FileKind};
 use crate::limits::{LimitName, Limits};
 use crate::location::{FrameKind, Location, Scope, ScriptName};
-use crate::message::{Note, Region};
+use crate::message::{MacroTable, Note, Region};
 use crate::outcome::{Details, FileOutcome, NotCheckedReason, SpecialKind};
 use crate::settings::Encoding;
 use crate::text::Text;
@@ -80,6 +80,7 @@ pub struct WorkBudget {
     max_depth: u64,
     max_file_size: u64,
     max_ratio: u64,
+    max_syntax_depth: u64,
     work: u64,
     bytes: u64,
     depth: u64,
@@ -166,6 +167,7 @@ impl WorkBudget {
             max_depth: limits.get(LimitName::ArchiveDepth),
             max_file_size: limits.get(LimitName::FileSize),
             max_ratio: limits.get(LimitName::DecompressionRatio),
+            max_syntax_depth: limits.get(LimitName::SyntaxDepth),
             work: 0,
             bytes: 0,
             depth: 0,
@@ -228,6 +230,21 @@ impl WorkBudget {
         charge(LimitName::Work, &mut self.work, steps, self.max_work)
     }
 
+    pub fn max_syntax_depth(&self) -> u64 {
+        self.max_syntax_depth
+    }
+
+    pub fn syntax_depth(&self, depth: u64) -> Result<(), Exceeded> {
+        if depth > self.max_syntax_depth {
+            return Err(Exceeded {
+                limit: LimitName::SyntaxDepth,
+                value: depth,
+                max: self.max_syntax_depth,
+            });
+        }
+        Ok(())
+    }
+
     pub fn buffer(&mut self, bytes: u64) -> Result<(), Exceeded> {
         charge(LimitName::Memory, &mut self.bytes, bytes, self.max_bytes)
     }
@@ -261,18 +278,20 @@ impl WorkBudget {
     }
 }
 
-pub struct ReadCtx {
+pub struct ReadCtx<'m> {
     pub location: Location,
     pub encoding: Option<Encoding>,
     budget: WorkBudget,
+    macros: Option<&'m MacroTable>,
 }
 
-impl ReadCtx {
+impl ReadCtx<'static> {
     pub fn new(location: Location, limits: &Limits, encoding: Option<Encoding>) -> Self {
         ReadCtx {
             location,
             encoding,
             budget: WorkBudget::new(limits),
+            macros: None,
         }
     }
 
@@ -281,7 +300,23 @@ impl ReadCtx {
             location,
             encoding,
             budget,
+            macros: None,
         }
+    }
+}
+
+impl<'m> ReadCtx<'m> {
+    pub fn with_macros<'t>(self, macros: &'t MacroTable) -> ReadCtx<'t> {
+        ReadCtx {
+            location: self.location,
+            encoding: self.encoding,
+            budget: self.budget,
+            macros: Some(macros),
+        }
+    }
+
+    pub fn macros(&self) -> Option<&'m MacroTable> {
+        self.macros
     }
 
     pub fn budget(&self) -> &WorkBudget {
@@ -298,6 +333,10 @@ impl ReadCtx {
 
     pub fn buffer(&mut self, bytes: u64) -> Result<(), Exceeded> {
         self.budget.buffer(bytes)
+    }
+
+    pub fn syntax_depth(&self, depth: u64) -> Result<(), Exceeded> {
+        self.budget.syntax_depth(depth)
     }
 
     pub fn release(&mut self, bytes: u64) {
@@ -329,7 +368,7 @@ pub trait FactSink {
 
 pub trait Reader {
     fn file_kind(&self) -> FileKind;
-    fn read(&self, bytes: &[u8], ctx: &mut ReadCtx, sink: &mut dyn FactSink) -> ReadResult;
+    fn read(&self, bytes: &[u8], ctx: &mut ReadCtx<'_>, sink: &mut dyn FactSink) -> ReadResult;
 }
 
 pub trait ReadSeek: Read + Seek {}
@@ -376,13 +415,17 @@ pub struct Entry<'e> {
 
 pub trait ContainerReader {
     fn frame_kind(&self) -> FrameKind;
-    fn open<'a>(&self, input: Input<'a>, ctx: &mut ReadCtx) -> ReadResult<Box<dyn Container + 'a>>;
+    fn open<'a>(
+        &self,
+        input: Input<'a>,
+        ctx: &mut ReadCtx<'_>,
+    ) -> ReadResult<Box<dyn Container + 'a>>;
 }
 
 pub trait Container {
     fn name(&self) -> Option<Text>;
-    fn own_facts(&mut self, ctx: &mut ReadCtx, sink: &mut dyn FactSink) -> ReadResult;
-    fn next_entry(&mut self, ctx: &mut ReadCtx) -> ReadResult<Option<Entry<'_>>>;
+    fn own_facts(&mut self, ctx: &mut ReadCtx<'_>, sink: &mut dyn FactSink) -> ReadResult;
+    fn next_entry(&mut self, ctx: &mut ReadCtx<'_>) -> ReadResult<Option<Entry<'_>>>;
 }
 
 pub type ByteCount = Rc<Cell<u64>>;
@@ -451,5 +494,60 @@ impl<R: Read> Read for ChargedRead<R> {
             return Err(io::Error::other(e));
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::location::{InputRef, RelPath};
+
+    fn ctx(limits: &Limits) -> ReadCtx<'static> {
+        let location = Location::file(
+            InputRef {
+                index: 0,
+                given: Text::from("/src"),
+            },
+            Vec::new(),
+            RelPath::try_from("a.c").unwrap(),
+        );
+        ReadCtx::new(location, limits, None)
+    }
+
+    #[test]
+    fn a_macro_table_is_borrowed_and_optional() {
+        let limits = Limits::default();
+        assert!(ctx(&limits).macros().is_none());
+        let table = MacroTable::new();
+        let with = ctx(&limits).with_macros(&table);
+        assert!(std::ptr::eq(with.macros().unwrap(), &table));
+    }
+
+    #[test]
+    fn syntax_depth_is_a_maximum_not_a_total() {
+        let limits = Limits::default().with(LimitName::SyntaxDepth, 10).unwrap();
+        let ctx = ctx(&limits);
+        assert_eq!(ctx.budget().max_syntax_depth(), 10);
+        assert_eq!(ctx.syntax_depth(10), Ok(()));
+        assert_eq!(ctx.syntax_depth(10), Ok(()));
+        let over = ctx.syntax_depth(11).unwrap_err();
+        assert_eq!(
+            over,
+            Exceeded {
+                limit: LimitName::SyntaxDepth,
+                value: 11,
+                max: 10
+            }
+        );
+        assert_eq!(
+            NotRead::from(over).outcome(),
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::LimitExceeded(LimitName::SyntaxDepth),
+                details: Details::Measured {
+                    value: 11,
+                    limit: 10
+                }
+            }
+        );
     }
 }

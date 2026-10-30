@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use boxt_core::fact::FileKind;
 use boxt_core::limits::{LimitError, LimitName, Limits, MEMORY_CAP_FACTOR};
 use boxt_core::message::{
-    CollectorMsg, Decoded, EntryPath, ExitClass, FrameError, Job, JobKind, ParentKill, Platform,
-    RawExit, WorkerExit, WorkerMsg, classify_exit, decode_frame, encode_frame, fault_scope,
-    faulting_entry,
+    CollectorMsg, Decoded, EntryBudget, EntryPath, ExitClass, FrameError, Job, JobKind, ParentKill,
+    Platform, RawExit, Region, WorkerExit, WorkerMsg, classify_exit, decode_frame, encode_frame,
+    fault_scope, faulting_entry,
 };
 use boxt_core::outcome::{FaultKind, FileOutcome, NotCheckedReason, Outcome};
 use boxt_core::settings::WorkerSettings;
@@ -347,6 +347,7 @@ fn raw_exit(status: Option<ExitStatus>) -> RawExit {
     RawExit::Code(status.and_then(|s| s.code()).unwrap_or(-1))
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum Death {
     BadFrame,
     Watchdog,
@@ -422,6 +423,7 @@ impl Worker {
         }
         let deadline = Instant::now().checked_add(watchdog);
         let mut opened: Option<Option<FileKind>> = None;
+        let mut check = EntryCheck::new(limits);
         loop {
             let received = match deadline {
                 Some(deadline) => self
@@ -437,8 +439,8 @@ impl Worker {
                 Err(RecvTimeoutError::Timeout) => return Err(Death::Watchdog),
                 Err(RecvTimeoutError::Disconnected) => return Err(Death::Died),
             };
-            let msg = match frame {
-                Ok(Some(decoded)) => decoded.msg,
+            let (msg, payload_len) = match frame {
+                Ok(Some(decoded)) => (decoded.msg, decoded.payload_len),
                 Ok(None) => return Err(Death::Died),
                 Err(_) => return Err(Death::BadFrame),
             };
@@ -452,6 +454,11 @@ impl Worker {
                 } if entry == EntryPath::job() && opened.is_none() => {
                     opened = Some(file_kind);
                 }
+                WorkerMsg::Facts { ref entry, .. } | WorkerMsg::Regions { ref entry, .. }
+                    if *entry == EntryPath::job() && opened.is_some() =>
+                {
+                    check.frame(&msg, payload_len)?;
+                }
                 WorkerMsg::JobDone {
                     outcome: Some(outcome),
                 } => {
@@ -461,11 +468,10 @@ impl Worker {
                             .is_ok()
                         && (job.kind != JobKind::Route
                             || opened.is_some_and(|kind| kind == outcome.file_kind));
-                    return if valid {
-                        Ok(outcome)
-                    } else {
-                        Err(Death::BadFrame)
-                    };
+                    if !valid {
+                        return Err(Death::BadFrame);
+                    }
+                    return check.done(outcome);
                 }
                 _ => return Err(Death::BadFrame),
             }
@@ -488,10 +494,184 @@ impl Worker {
     }
 }
 
+#[derive(Debug)]
+struct EntryCheck {
+    budget: EntryBudget,
+    regions: Vec<Region>,
+}
+
+impl EntryCheck {
+    fn new(limits: &Limits) -> Self {
+        EntryCheck {
+            budget: EntryBudget::new(limits),
+            regions: Vec::new(),
+        }
+    }
+
+    fn frame(&mut self, msg: &WorkerMsg, payload_len: u64) -> Result<(), Death> {
+        match msg {
+            WorkerMsg::Facts { facts, .. } => {
+                if !self.regions.is_empty() || facts.iter().any(|f| f.validate().is_err()) {
+                    return Err(Death::BadFrame);
+                }
+            }
+            WorkerMsg::Regions { regions, .. } => {
+                let mut last = self.regions.last().map_or(0, |r| r.last_line);
+                for region in regions {
+                    if region.validate().is_err() || region.first_line <= last {
+                        return Err(Death::BadFrame);
+                    }
+                    last = region.last_line;
+                }
+                self.regions.extend(regions.iter().copied());
+            }
+            _ => return Err(Death::BadFrame),
+        }
+        let _ = self.budget.charge_frame(msg, payload_len);
+        Ok(())
+    }
+
+    fn done(&self, mut outcome: Outcome) -> Result<Outcome, Death> {
+        if let Some(exceeded) = self.budget.exceeded_outcome() {
+            if outcome.file == FileOutcome::Read {
+                return Err(Death::BadFrame);
+            }
+            outcome.file = exceeded;
+            return Ok(outcome);
+        }
+        if self.regions.is_empty() {
+            return Ok(outcome);
+        }
+        let Some(count) = outcome.lines else {
+            return Err(Death::BadFrame);
+        };
+        if self
+            .regions
+            .iter()
+            .any(|region| region.validate_within(count.lines).is_err())
+        {
+            return Err(Death::BadFrame);
+        }
+        Ok(outcome)
+    }
+}
+
 impl Drop for Worker {
     fn drop(&mut self) {
         if !self.reaped {
             self.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use boxt_core::Text;
+    use boxt_core::fact::Fact;
+    use boxt_core::location::{InputRef, Location, RelPath, Scope};
+    use boxt_core::message::RegionReason;
+    use boxt_core::outcome::Details;
+
+    use super::*;
+
+    fn fact() -> Fact {
+        let location = Location::file(
+            InputRef {
+                index: 0,
+                given: Text::from("/src"),
+            },
+            Vec::new(),
+            RelPath::try_from("a.c").unwrap(),
+        );
+        Fact::Call {
+            file_kind: FileKind::Source,
+            location: location.at(Some(1), Scope::File),
+            callee: Text::from("f"),
+            args: Vec::new(),
+            guards: Vec::new(),
+        }
+    }
+
+    fn facts(n: usize) -> WorkerMsg {
+        WorkerMsg::Facts {
+            entry: EntryPath::job(),
+            facts: vec![fact(); n],
+        }
+    }
+
+    fn regions(lines: &[(u32, u32)]) -> WorkerMsg {
+        WorkerMsg::Regions {
+            entry: EntryPath::job(),
+            regions: lines
+                .iter()
+                .map(|&(first_line, last_line)| Region {
+                    first_line,
+                    last_line,
+                    reason: RegionReason::Unparseable,
+                })
+                .collect(),
+        }
+    }
+
+    fn read(lines: Option<u64>) -> Outcome {
+        let outcome = Outcome::new(FileOutcome::Read, Some(FileKind::Source));
+        match lines {
+            Some(n) => outcome.with_lines(n),
+            None => outcome,
+        }
+    }
+
+    #[test]
+    fn an_entry_over_its_fact_limit_is_not_checked_or_a_bad_frame() {
+        let limits = Limits::default().with(LimitName::EntryFacts, 2).unwrap();
+        let mut check = EntryCheck::new(&limits);
+        check.frame(&facts(3), 10).unwrap();
+        assert_eq!(check.done(read(Some(5))), Err(Death::BadFrame));
+        let claimed = Outcome::new(
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::LimitExceeded(LimitName::EntryFacts),
+                details: Details::None,
+            },
+            Some(FileKind::Source),
+        )
+        .with_lines(5);
+        let got = check.done(claimed).unwrap();
+        assert_eq!(
+            got.file,
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::LimitExceeded(LimitName::EntryFacts),
+                details: Details::Measured { value: 3, limit: 2 }
+            }
+        );
+    }
+
+    #[test]
+    fn regions_need_a_line_count_and_fit_it() {
+        let mut check = EntryCheck::new(&Limits::default());
+        check.frame(&regions(&[(2, 3)]), 10).unwrap();
+        assert_eq!(check.done(read(None)), Err(Death::BadFrame));
+        assert_eq!(check.done(read(Some(2))), Err(Death::BadFrame));
+        assert!(check.done(read(Some(3))).is_ok());
+        assert!(EntryCheck::new(&Limits::default()).done(read(None)).is_ok());
+    }
+
+    #[test]
+    fn frames_keep_their_order() {
+        let mut check = EntryCheck::new(&Limits::default());
+        check.frame(&facts(1), 10).unwrap();
+        check.frame(&regions(&[(1, 1), (3, 4)]), 10).unwrap();
+        assert_eq!(check.frame(&facts(1), 10), Err(Death::BadFrame));
+        let mut again = EntryCheck::new(&Limits::default());
+        again.frame(&regions(&[(1, 1), (3, 4)]), 10).unwrap();
+        assert_eq!(
+            again.frame(&regions(&[(1, 1), (3, 4)]), 10),
+            Err(Death::BadFrame)
+        );
+        again.frame(&regions(&[(6, 6)]), 10).unwrap();
+        let mut overlap = EntryCheck::new(&Limits::default());
+        assert_eq!(
+            overlap.frame(&regions(&[(3, 4), (4, 5)]), 10),
+            Err(Death::BadFrame)
+        );
     }
 }

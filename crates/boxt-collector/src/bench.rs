@@ -5,10 +5,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use boxt_core::compile_db::extension_class;
-use boxt_core::location::InputRef;
-use boxt_core::message::{Job, JobFile, JobKind};
+use boxt_core::fact::Fact;
+use boxt_core::limits::Limits;
+use boxt_core::location::{InputRef, Location};
+use boxt_core::message::{Job, JobFile, JobKind, Note, Region};
 use boxt_core::outcome::line_count;
-use boxt_read_cpp::Grammar;
+use boxt_core::read::{Exceeded, FactSink, ReadCtx, Reader};
+use boxt_read_cpp::{CppReader, Grammar};
 
 use crate::path::{job_path, rel_path, text_from_path};
 
@@ -78,17 +81,37 @@ pub fn parse_in_process(jobs: &[Job], threads: NonZeroUsize) -> io::Result<usize
     Ok(read.into_inner())
 }
 
+struct Discard;
+
+impl FactSink for Discard {
+    fn fact(&mut self, fact: Fact) -> Result<(), Exceeded> {
+        std::hint::black_box(fact);
+        Ok(())
+    }
+
+    fn region(&mut self, region: Region) -> Result<(), Exceeded> {
+        std::hint::black_box(region);
+        Ok(())
+    }
+
+    fn note(&mut self, _: Note) -> Result<(), Exceeded> {
+        Ok(())
+    }
+}
+
 fn parse_one(job: &Job) -> io::Result<bool> {
     let Some(path) = job_path(job) else {
         return Ok(false);
     };
-    let Some(grammar) = job
+    let Some(rel) = job
         .path()
-        .and_then(|p| Grammar::for_file_name(p.file_name()))
+        .filter(|p| Grammar::for_file_name(p.file_name()).is_some())
     else {
         return Ok(false);
     };
     let bytes = std::fs::read(path)?;
     std::hint::black_box(line_count(&bytes, None));
-    Ok(boxt_read_cpp::parse(&bytes, grammar).is_ok())
+    let location = Location::file(job.input.clone(), Vec::new(), rel.clone());
+    let mut ctx = ReadCtx::new(location, &Limits::default(), None);
+    Ok(CppReader.read(&bytes, &mut ctx, &mut Discard).is_ok())
 }
