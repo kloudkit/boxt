@@ -351,9 +351,9 @@ are:
 - Worker to collector: `Opened`, `Facts`, `Regions`, `Notes`, `EntryDone`, `CompileUnits`,
   `Definitions`, `JobDone`.
 - Every message is one frame: a `u32` little-endian payload length, then the payload,
-  written by `encode_frame` and read by `decode_frame`. The payload is `serde_json`, kept by
-  Story 1.4 pending its CI benchmark against the AD-13 speed bar (the Story 1.4 spike
-  report). Any serde format works (Wire form), so a change of encoding touches only
+  written by `encode_frame` and read by `decode_frame`. The payload is `serde_json`, chosen
+  by Story 1.4: the pool met the AD-13 speed bar with it on Linux and Windows (the Story 1.4
+  spike report). Any serde format works (Wire form), so a change of encoding touches only
   `encode_frame`, `decode_frame` and the splitters' size measure.
 - The frame cap is the `EntryMessageBytes` limit: both ends pass it as `max_len`, in both
   directions. The collector passes that same value to `MacroDef::validate` and to
