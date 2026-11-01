@@ -73,7 +73,20 @@ fn target_rows(report: &str) -> Vec<String> {
 }
 
 fn shown(path: &Path) -> String {
-    path.to_str().unwrap().to_owned()
+    let native: PathBuf = path.components().collect();
+    boxt_render::escape(&boxt_collector::path::text_from_path(&native))
+}
+
+fn names_project_file(report: &str, path: &Path) -> bool {
+    let mut lines = report
+        .lines()
+        .skip_while(|l| !l.starts_with("  project file:"));
+    let mut joined: String = lines.next().unwrap_or_default().to_owned();
+    for more in lines.take_while(|l| l.starts_with("    ")) {
+        joined.push_str(more);
+    }
+    let squeeze = |t: &str| t.split_whitespace().collect::<String>();
+    squeeze(&joined) == squeeze(&format!("project file: {}", shown(path)))
 }
 
 #[test]
@@ -84,10 +97,7 @@ fn a_file_above_the_first_input_is_found_from_any_working_folder() {
     let input = dir.0.join("repo/src/net");
     let out = boxt_in(&dir.0.join("elsewhere"), [&input]);
     let report = ok(&out);
-    assert!(
-        report.contains(&format!("\n  project file: {}\n", shown(&file))),
-        "{report}"
-    );
+    assert!(names_project_file(&report, &file), "{report}");
     assert_eq!(target_rows(&report), ["docker-default"], "{report}");
     assert!(stderr(&out).is_empty(), "{}", stderr(&out));
 }
@@ -99,10 +109,7 @@ fn a_file_input_searches_from_its_folder_and_shows_the_path_joined_from_the_inpu
     let out = boxt_in(&dir.0, ["repo/./src/net/a.c"]);
     let report = ok(&out);
     assert!(
-        report.contains(&format!(
-            "\n  project file: {}\n",
-            shown(&dir.0.join("repo/src/boxt.yaml"))
-        )),
+        names_project_file(&report, &dir.0.join("repo/src/boxt.yaml")),
         "{report}"
     );
     assert!(!report.contains("lies above"), "{report}");
@@ -115,10 +122,7 @@ fn an_input_with_dot_dot_resolves_by_name() {
     write(&dir.0.join("repo/boxt.yaml"), "schema: \"1.0\"\n");
     let report = ok(&boxt_in(&dir.0, ["elsewhere/../repo/src"]));
     assert!(
-        report.contains(&format!(
-            "\n  project file: {}\n",
-            shown(&dir.0.join("repo/boxt.yaml"))
-        )),
+        names_project_file(&report, &dir.0.join("repo/boxt.yaml")),
         "{report}"
     );
 }
@@ -134,10 +138,7 @@ fn the_nearest_folder_wins() {
     );
     let out = boxt_in(&dir.0, [dir.0.join("repo/src/net")]);
     let report = ok(&out);
-    assert!(
-        report.contains(&format!("\n  project file: {}\n", shown(&inner))),
-        "{report}"
-    );
+    assert!(names_project_file(&report, &inner), "{report}");
     assert_eq!(target_rows(&report), ["rootless-podman"], "{report}");
     assert!(stderr(&out).is_empty(), "{}", stderr(&out));
 }
@@ -148,7 +149,7 @@ fn the_hidden_name_is_found_too() {
     let file = dir.0.join("repo/.boxt.yaml");
     write(&file, "schema: \"1.0\"\ntargets: [rootless-podman]\n");
     let report = ok(&boxt_in(&dir.0, [dir.0.join("repo/src")]));
-    assert!(report.contains(&format!("project file: {}\n", shown(&file))));
+    assert!(names_project_file(&report, &file));
     assert_eq!(target_rows(&report), ["rootless-podman"], "{report}");
 }
 
@@ -241,7 +242,7 @@ fn a_file_above_the_vcs_root_is_used_with_a_warning() {
             .contains("│ The project file lies above the version-control root of the first input;"),
         "{report}"
     );
-    assert!(report.contains(&format!("project file: {}\n", shown(&file))));
+    assert!(names_project_file(&report, &file));
     let err = stderr(&out);
     assert!(
         err.starts_with(&format!(
