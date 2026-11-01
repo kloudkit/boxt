@@ -26,6 +26,8 @@ macro_rules! closed_enum {
 pub mod compile_db;
 pub mod decode;
 pub mod fact;
+pub mod identity;
+pub mod input_scope;
 pub mod limits;
 pub mod location;
 pub mod message;

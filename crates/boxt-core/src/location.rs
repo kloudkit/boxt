@@ -20,6 +20,16 @@ closed_enum! {
     }
 }
 
+impl FrameKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            FrameKind::Rpm => "rpm",
+            FrameKind::Deb => "deb",
+            FrameKind::Archive => "archive",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Frame {
     pub kind: FrameKind,

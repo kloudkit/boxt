@@ -8,6 +8,8 @@ use boxt_core::fact::{
     Directive, Fact, FactError, FactKind, FileKind, GuardChain, GuardError, GuardRegionError,
     LineRule, PathRule, RegionId,
 };
+use boxt_core::identity::FindingId;
+use boxt_core::input_scope::{self, InputScope};
 use boxt_core::limits::{LimitError, LimitName, LimitScope, Limits, MEMORY_CAP_FACTOR};
 use boxt_core::location::{
     EntryNameError, Frame, FrameKind, Location, PathText, RelPath, SCRIPT_NAMES, Scope, ScopeKind,
@@ -31,7 +33,11 @@ use boxt_core::read::{
 };
 use boxt_core::settings::{CompileDatabaseSetting, Encoding, Settings, WorkerSettings};
 use boxt_core::shell::{self, is_shell_interpreter};
-use boxt_core::verdict::{CoverageError, RuleCoverage, RuleId};
+use boxt_core::verdict::{
+    BehaviourId, Confidence, CoverageError, Evidence, EvidenceId, Finding, NotCheckedEntry,
+    Observation, ReportedFinding, Result as VerdictResult, RuleCoverage, RuleId, TargetId,
+    TargetVerdict, Tier, TierRange,
+};
 use boxt_core::version::{RULE_SCHEMA_VERSION, SchemaVersion, Versions};
 
 use common::{compact, frame, input, opened, sample_fact, worker_settings};
@@ -1270,8 +1276,93 @@ fn wire_types_round_trip_through_a_format_that_is_not_self_describing() {
         compact::from_bytes::<Versions>(&versions).unwrap(),
         Versions::CURRENT
     );
+    let result = sample_result();
+    let bytes = compact::to_bytes(&result).unwrap();
+    assert_eq!(
+        compact::from_bytes::<VerdictResult>(&bytes).unwrap(),
+        result
+    );
 
     assert!(compact::from_bytes::<serde_json::Value>(&bytes).is_err());
+}
+
+fn sample_result() -> VerdictResult {
+    let at = |path: &str, line| Location {
+        input: input(),
+        frames: vec![Frame {
+            kind: FrameKind::Rpm,
+            name: Text::from("app"),
+        }],
+        path: Some(RelPath::try_from(path).unwrap()),
+        line,
+        scope: Scope::File,
+    };
+    let finding = Finding {
+        location: at("main.c", Some(3)),
+        rule: RuleId::new("net/bind").unwrap(),
+        behaviour: BehaviourId::new("bind").unwrap(),
+        confidence: Confidence::Found,
+        evidence: Evidence {
+            definition: EvidenceId::new("call").unwrap(),
+        },
+        guards: Vec::new(),
+        fix: "fix".to_owned(),
+    };
+    let outcome = Outcome::new(
+        FileOutcome::NotChecked {
+            reason: NotCheckedReason::Unparseable,
+            details: Details::None,
+        },
+        Some(FileKind::Source),
+    )
+    .with_lines(4);
+    VerdictResult {
+        versions: Versions::CURRENT,
+        input_scope: InputScope::SourceOnly,
+        input_scope_text: input_scope::text(InputScope::SourceOnly, true),
+        counts: verdict_counts([&outcome.file]),
+        sm3: Default::default(),
+        macro_tables_cut: vec![0].into(),
+        host_dependent: true,
+        targets: vec![TargetVerdict {
+            target: TargetId::new("docker-default").unwrap(),
+            range: TierRange {
+                found: Tier::NeedsCodeChange,
+                with_suspected: Tier::Blocked,
+            },
+            found: 1,
+            suspected: 0,
+            unmapped: vec![BehaviourId::new("odd").unwrap()].into(),
+        }]
+        .into(),
+        findings: vec![ReportedFinding {
+            finding,
+            id: FindingId::parse("0123456789ab-1").unwrap(),
+        }]
+        .into(),
+        not_checked: vec![
+            NotCheckedEntry::File {
+                location: at("broken.c", None),
+                outcome,
+            },
+            NotCheckedEntry::Region {
+                location: at("partly.c", None),
+                first_line: 10,
+                last_line: 20,
+                reason: RegionReason::Unparseable,
+            },
+            NotCheckedEntry::DynamicLoad {
+                location: at("app", None),
+                symbol: Text::from_bytes(vec![0xff, b'x']),
+            },
+        ]
+        .into(),
+        observations: vec![Observation::DynamicLoad {
+            location: at("app", None),
+            symbol: Text::from("dlopen"),
+        }]
+        .into(),
+    }
 }
 
 #[test]

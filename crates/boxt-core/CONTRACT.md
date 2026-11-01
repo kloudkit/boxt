@@ -39,10 +39,14 @@ alone.
 | `Settings.targets`, `.ignored_macros` | sorted |
 | `RuleCoverage.file_kinds` | sorted alternatives, each a sorted list of `FileKind`s; `RuleCoverage` refuses an empty alternative and any duplicate |
 | each `SortedVec` field of `Profile`, `Control`, `Coverage` and `Result` | sorted |
+| `TargetVerdict.unmapped` | sorted, without repeats |
+| `Result.not_checked` | sorted by `NotCheckedEntry`'s derived `Ord`: variant (`File`, `Region`, `DynamicLoad`), then `location` |
 | a list inside an element of a sorted list (`Finding.guards`, `Finding.location.frames`) | its own order, from the rows above |
 
-`Result.findings` sorts by `Finding`'s field order, `location` first, so the fixed order is
-byte-exact on every host. User grouping and sort live only in `Result.groups` (Story 6.2).
+`Result.findings` is a `SortedVec<ReportedFinding>`; `ReportedFinding` sorts by its
+`finding` first, so the list keeps `Finding`'s field order, `location` first, and the fixed
+order is byte-exact on every host. User grouping and sort live only in `Result.groups`
+(Story 6.2).
 
 Canonical order for facts and outcomes, used by the collector for run-wide cuts and for
 the order it hands facts to `boxt-rules`, is `CanonicalKey`'s order: input index, then the
@@ -58,9 +62,11 @@ joins the run's facts or outcomes.
 Every type that crosses a process boundary, or is serialized into a report, uses a serde
 form that any serde format can carry: enums are externally tagged (serde's default; no
 `#[serde(tag)]`, `untagged` or `flatten`), and nothing calls `deserialize_any` unless the
-format is human-readable. A test round-trips every collector and worker message through a
-format that is not self-describing and refuses `deserialize_any`. Story 1.4 kept
-`serde_json` behind `encode_frame` and `decode_frame` (§ Worker protocol).
+format is human-readable. `ReportedFinding` serializes as one flat struct, its `id` then
+`Finding`'s fields, through a private mirror struct (`serde(from, into)`), not
+`#[serde(flatten)]`, so it keeps this rule. A test round-trips every collector and worker
+message through a format that is not self-describing and refuses `deserialize_any`. Story
+1.4 kept `serde_json` behind `encode_frame` and `decode_frame` (§ Worker protocol).
 
 ## Text (AD-11, RA2-L4, RA2-M3)
 
@@ -1005,13 +1011,15 @@ are:
   `UnsupportedVersion{supported, found, reason}` otherwise, naming both versions, with
   reason `OtherMajor` or `NewerMinor`. Every loader checks against them and every report
   states them through `Versions::CURRENT`. Story 6.8 owns the published policy.
-- `JSON_OUTPUT_VERSION` stays 1.0. Story 1.11 changed `Result.sm3` into `Sm3`, with a line
-  and a file share and the uncounted and incomplete lists, and added
-  `Result.macro_tables_cut`. That change is not additive, so the rule above would make it a
-  major bump; by operator decision 1.0 is re-recorded instead, because no output has
-  shipped (as `RULE_SCHEMA_VERSION` 1.0 was). `RULE_SCHEMA_VERSION` stays 1.0, since no
-  `Fact` changed, and its snapshot is unchanged. The worker messages and `Job` carry no
-  version: both ends are the same binary.
+- `JSON_OUTPUT_VERSION` stays 1.0. Story 1.9 added `Result.input_scope`, `.input_scope_text`
+  and `.not_checked` and `TargetVerdict.unmapped`, and turned `Result.findings` into
+  `ReportedFinding`s; by the same operator decision 1.0 is re-recorded again, since no
+  output has shipped. Story 1.11 changed `Result.sm3` into `Sm3`, with a line and a file
+  share and the uncounted and incomplete lists, and added `Result.macro_tables_cut`. That
+  change is not additive, so the rule above would make it a major bump; by operator decision
+  1.0 is re-recorded instead, because no output has shipped (as `RULE_SCHEMA_VERSION` 1.0
+  was). `RULE_SCHEMA_VERSION` stays 1.0, since no `Fact` changed, and its snapshot is
+  unchanged. The worker messages and `Job` carry no version: both ends are the same binary.
 
 ## Verdict types (AD-5, AD-16, AD-19, RA2-M6)
 
@@ -1019,8 +1027,9 @@ are:
 - Ids are kebab-case segments joined by `/`; `ID_SEGMENT_PATTERN` is the regular expression
   of one segment that `validate_id` accepts. Rule ids have at least two segments
   (`<dimension>/<name>`); user ids start with `user/`.
-- `Finding`, `Evidence`, `Observation`, `Coverage`, `Profile`, `Control` and `Result` live
-  here. Their fields are minimal; later stories extend them.
+- `Finding`, `Evidence`, `Observation`, `Coverage`, `Profile`, `Control`, `TargetVerdict`,
+  `ReportedFinding`, `NotCheckedEntry` and `Result` live here. Their fields are minimal;
+  later stories extend them.
 - `RuleCoverage.file_kinds` is a sorted list of alternatives, each a sorted list of
   `FileKind`s that must all be read for the rule to fire. `RuleCoverage::new` and
   deserialization refuse an empty alternative, a repeated alternative and a repeated
@@ -1028,5 +1037,91 @@ are:
   every kind of some alternative was read. A rule matching `all` of a source fact and a
   package fact has the one alternative `[source, package]`; one matching `any` of an
   import or a call has `[[source], [binary]]`.
-- `boxt-verdict` depends on `boxt-core` only, never on `boxt-rules`. It parses the waiver
-  file itself, with its own size and depth limits.
+- `boxt-verdict` depends on `boxt-core`, `serde` and `sha2` only, never on `boxt-rules`. It
+  parses the waiver file itself, with its own size and depth limits.
+
+### Building the result (FR-21..FR-26, Story 1.9)
+
+`boxt_verdict::build(&VerdictInput) -> Result<Result, VerdictError>` is the one place a
+`Result` is built. `VerdictInput` holds core types only: the named `targets`, the loaded
+`profiles`, the run's `files`, the rules' `findings` and `observations`,
+`macro_tables_cut`, `host_dependent_trees`, `roots` (the absolute form of each input,
+indexed by `InputRef.index`, supplied by the caller: verdict reads no filesystem) and
+`compile_database_used`. Verdict never sees facts.
+
+- **Targets (FR-22).** With no target named every profile applies, in `TargetId` order;
+  otherwise exactly the named ones. An unknown id is
+  `VerdictError::UnknownTarget{id, known}`, `known` every loaded id. A run with no `Read`
+  outcome is `VerdictError::NothingRead` (FR-25). Targets are checked first. Story 1.10
+  wires `build` into the bin and maps both errors to exit 2.
+- **Tiers (FR-21).** For a target and a finding, the tier is the worst `BehaviourTier.tier`
+  over every control listing the behaviour, or `Ready` when the profile allows it. A
+  behaviour neither listed nor allowed is unmapped: it goes into `TargetVerdict.unmapped`,
+  sets no tier and is not counted.
+- **Verdict line (FR-23).** `TargetVerdict{target, range: TierRange{found,
+  with_suspected}, found, suspected, unmapped}`: `range.found` is the worst tier over found
+  findings, `with_suspected` over found and suspected, each `Ready` when no finding counts.
+  `found` and `suspected` count the findings whose behaviour the profile lists or allows.
+  The files-read and not-checked counts are `Result.counts`, from `verdict_counts`; the
+  SM-3 shares are `Result.sm3`, from `sm3_share`. Verdict recomputes neither.
+- `Result.host_dependent` is true when any file's outcome is host-dependent or
+  `host_dependent_trees` is not empty. `Result.versions` is `Versions::CURRENT`. Nothing in
+  `Result` holds a time, duration, host name or pid.
+
+### Not checked (FR-25)
+
+`Result.not_checked` is a `SortedVec<NotCheckedEntry>`, never an `Option`, so no `Result`
+exists without it and "ready" can never be shown without the list.
+
+- `File{location, outcome}` for every `NotChecked` or `Aggregate` file: special files,
+  links, limits, faults, `NotInCompileDatabase` and the rest, each with its `Outcome` and so
+  its reason. `OutOfScope` files are not listed (they feed only the FR-5 counts).
+- `Region{location, first_line, last_line, reason}` for every region of a `Read` file, at
+  the file's location.
+- `DynamicLoad{location, symbol}` for each `Observation::DynamicLoad`, which also stays in
+  `Result.observations`.
+- Unmapped behaviours are per target, in `TargetVerdict.unmapped`. Per-control entries
+  (controls no rule can detect, or whose rules read no input kind that was read) need
+  `Coverage` and are Story 4.2's.
+
+### Input scope (FR-26, AD-16)
+
+- `InputScope` is the closed enum of the eight FR-26 rows: `source_only`, `binaries_only`,
+  `packages_only`, `source_and_binaries`, `source_and_packages`, `binaries_and_packages`,
+  `source_binaries_and_packages` and `configuration_only`. `InputScope::of(source,
+  binaries, packages)` picks the row; none of the three is `configuration_only`.
+- Verdict takes the three from the `FileKind`s of `Read` outcomes only: source when a
+  `Source` file was read, binaries when a `Binary` file was read whose location has no RPM
+  or DEB frame (an ELF in a tarball counts), packages when a `Package` file was read.
+- `input_scope::text(scope, compile_database_used)` is the one table: the PRD's warning
+  text verbatim, followed, when a compile database was used, by a space and
+  `COMPILE_DATABASE_TEXT`. `Result.input_scope` holds the enum and
+  `Result.input_scope_text` the text. Renderers print the text; they never write their own.
+
+### Finding identity and id (AD-7)
+
+- `identity::Identity{behaviour, frames, path, scope}` is built only by `Identity::of`,
+  from a `Finding`'s behaviour and `Location`: never from the input index, the path as
+  given, the line or the rule. So a finding keeps its identity when lines move, when the
+  input is given by another path or in another order, and across checkouts.
+- `Identity::canonical_text()` is the one text form: a `Text` of fields joined by `\n`, with
+  no trailing LF. Each field is a label, a space and the value; inside a value `\` is
+  written `\\` and LF is written `\n`. The fields, in order: `behaviour <id>`; one `frame
+  <kind>:<name>` per frame, outermost first (kind `rpm`, `deb` or `archive`); `path <path>`,
+  empty when the path is `None`; `scope <kind>`, the `ScopeKind::name`; then the scope's own
+  fields. A `function` scope adds `name <qualified_name>` and `signature <signature>`, and a
+  `unit_section` scope adds `section <section>` and `key <key>`. The `symbol`, `config_key`
+  and `script` scopes all add one field with the same `text` label (the symbol, the key, or
+  the `ScriptName::name`); the `scope` line before it tells them apart. A `file` scope adds
+  nothing. Changing this form changes every id, and needs an operator decision once anything
+  has shipped.
+- `FindingId` is the first 12 lowercase hex digits of the SHA-256 of the canonical text,
+  `-`, and an ordinal `N` from 1, always present (`3fa1c2e9b0d4-1`). Core holds the type
+  and its parse; only `boxt-verdict` hashes and numbers.
+- Findings sharing an identity are numbered by: the input's root relative to the common
+  ancestor of all `roots` (split on `/`, and on `\` too on Windows; empty components
+  dropped; no project file yet), then the location's frames, path, line and scope (never
+  its input), then rule id, then corpus before user (`RuleId::is_user`), then the order in
+  the findings list. So one fixture given as `/a/x` and `/b/x`, or one root given twice,
+  gets the same ids whichever input comes first.
+- `Result.findings` holds each finding with its id as `ReportedFinding{finding, id}`.

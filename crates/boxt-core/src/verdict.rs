@@ -3,8 +3,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::fact::{FileKind, GuardChain};
+use crate::identity::FindingId;
+use crate::input_scope::InputScope;
 use crate::location::Location;
-use crate::outcome::{Sm3, VerdictCounts};
+use crate::message::RegionReason;
+use crate::outcome::{Outcome, Sm3, VerdictCounts};
 use crate::sorted::SortedVec;
 use crate::text::Text;
 use crate::version::Versions;
@@ -316,23 +319,140 @@ pub struct TargetVerdict {
     pub range: TierRange,
     pub found: u64,
     pub suspected: u64,
+    pub unmapped: SortedVec<BehaviourId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(from = "RawReportedFinding", into = "RawReportedFinding")]
+pub struct ReportedFinding {
+    pub finding: Finding,
+    pub id: FindingId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RawReportedFinding {
+    id: FindingId,
+    location: Location,
+    rule: RuleId,
+    behaviour: BehaviourId,
+    confidence: Confidence,
+    evidence: Evidence,
+    guards: Vec<GuardChain>,
+    fix: String,
+}
+
+impl From<RawReportedFinding> for ReportedFinding {
+    fn from(raw: RawReportedFinding) -> Self {
+        ReportedFinding {
+            finding: Finding {
+                location: raw.location,
+                rule: raw.rule,
+                behaviour: raw.behaviour,
+                confidence: raw.confidence,
+                evidence: raw.evidence,
+                guards: raw.guards,
+                fix: raw.fix,
+            },
+            id: raw.id,
+        }
+    }
+}
+
+impl From<ReportedFinding> for RawReportedFinding {
+    fn from(reported: ReportedFinding) -> Self {
+        let Finding {
+            location,
+            rule,
+            behaviour,
+            confidence,
+            evidence,
+            guards,
+            fix,
+        } = reported.finding;
+        RawReportedFinding {
+            id: reported.id,
+            location,
+            rule,
+            behaviour,
+            confidence,
+            evidence,
+            guards,
+            fix,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotCheckedEntry {
+    File {
+        location: Location,
+        outcome: Outcome,
+    },
+    Region {
+        location: Location,
+        first_line: u32,
+        last_line: u32,
+        reason: RegionReason,
+    },
+    DynamicLoad {
+        location: Location,
+        symbol: Text,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Result {
     pub versions: Versions,
+    pub input_scope: InputScope,
+    pub input_scope_text: String,
     pub counts: VerdictCounts,
     pub sm3: Sm3,
     pub macro_tables_cut: SortedVec<u32>,
     pub host_dependent: bool,
     pub targets: SortedVec<TargetVerdict>,
-    pub findings: SortedVec<Finding>,
+    pub findings: SortedVec<ReportedFinding>,
+    pub not_checked: SortedVec<NotCheckedEntry>,
     pub observations: SortedVec<Observation>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reported_finding_is_its_finding_plus_an_id() {
+        use crate::identity::FindingId;
+        use crate::location::{InputRef, RelPath, Scope};
+        let finding = Finding {
+            location: Location {
+                input: InputRef {
+                    index: 0,
+                    given: Text::from("/src"),
+                },
+                frames: Vec::new(),
+                path: Some(RelPath::try_from("main.c").unwrap()),
+                line: Some(3),
+                scope: Scope::File,
+            },
+            rule: RuleId::new("net/bind").unwrap(),
+            behaviour: BehaviourId::new("bind").unwrap(),
+            confidence: Confidence::Suspected,
+            evidence: Evidence {
+                definition: EvidenceId::new("call").unwrap(),
+            },
+            guards: Vec::new(),
+            fix: "fix".to_owned(),
+        };
+        let reported = ReportedFinding {
+            finding: finding.clone(),
+            id: FindingId::parse("0123456789ab-1").unwrap(),
+        };
+        let mut json = serde_json::to_value(&reported).unwrap();
+        let id = json.as_object_mut().unwrap().remove("id").unwrap();
+        assert_eq!(id, "0123456789ab-1");
+        assert_eq!(json, serde_json::to_value(&finding).unwrap());
+    }
 
     #[test]
     fn tiers_run_worst_to_best() {

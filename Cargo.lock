@@ -156,6 +156,9 @@ name = "boxt-verdict"
 version = "0.0.0"
 dependencies = [
  "boxt-core",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
