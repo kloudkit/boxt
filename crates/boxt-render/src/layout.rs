@@ -124,15 +124,23 @@ impl Para {
         self
     }
 
-    pub(crate) fn glue(mut self, text: &str) -> Para {
+    pub(crate) fn glue(mut self, text: &str, style: Style) -> Para {
         match self.atoms.last_mut() {
             Some(last) if last.gap == 0 => {
                 last.width += text.width();
-                last.parts.push((PLAIN, text.to_owned()));
+                last.parts.push((style, text.to_owned()));
             }
-            _ => self.atoms.push(Atom::new(vec![(PLAIN, text.to_owned())])),
+            _ => self.atoms.push(Atom::new(vec![(style, text.to_owned())])),
         }
         self
+    }
+
+    pub(crate) fn columns(&self) -> usize {
+        line(&Painter { styled: false }, &self.atoms).1
+    }
+
+    pub(crate) fn paint(&self, p: &Painter) -> String {
+        line(p, &self.atoms).0
     }
 
     pub(crate) fn plain(self, text: &str) -> Para {
@@ -213,21 +221,21 @@ pub(crate) fn emit(
     }
 }
 
-pub(crate) fn boxed(out: &mut String, p: &Painter, width: usize, paras: &[Para]) {
+pub(crate) fn boxed(out: &mut String, p: &Painter, width: usize, border: Style, paras: &[Para]) {
     let inner = width.saturating_sub(4);
-    out.push('┌');
-    out.push_str(&"─".repeat(width.saturating_sub(2)));
-    out.push_str("┐\n");
+    let rule = "─".repeat(width.saturating_sub(2));
+    out.push_str(&p.paint(border, &format!("┌{rule}┐")));
+    out.push('\n');
     for para in paras {
         for atoms in para.wrap(inner, inner) {
             let (text, w) = line(p, &atoms);
-            out.push_str("│ ");
+            out.push_str(&p.paint(border, "│ "));
             out.push_str(&text);
             out.push_str(&" ".repeat(inner.saturating_sub(w)));
-            out.push_str(" │\n");
+            out.push_str(&p.paint(border, " │"));
+            out.push('\n');
         }
     }
-    out.push('└');
-    out.push_str(&"─".repeat(width.saturating_sub(2)));
-    out.push_str("┘\n");
+    out.push_str(&p.paint(border, &format!("└{rule}┘")));
+    out.push('\n');
 }

@@ -57,12 +57,12 @@ fn the_first_answer_names_scope_verdict_findings_and_not_checked() {
         "{text}"
     );
     let verdict = text
-        .find("\ntarget          verdict          found  suspected  allowed\n")
+        .find("\n  target           verdict           found   suspected   allowed\n")
         .unwrap();
     let badge = text
-        .find("\ndocker-default  [needs Windows]      3          –       10\n")
+        .find("\n  docker-default   [needs Windows]       3           –        10\n")
         .unwrap();
-    let group = text.find("\nsetuid  ").unwrap();
+    let group = text.find("\n ▌setuid  ").unwrap();
     let not_checked = text.find("\nNot checked\n").unwrap();
     assert!(
         verdict < badge && badge < group && group < not_checked,
@@ -70,12 +70,12 @@ fn the_first_answer_names_scope_verdict_findings_and_not_checked() {
     );
     assert!(
         text.contains(
-            "  ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)\n    id-change-call · "
+            "   ● setuid.c:7   drop_to(const char *, uid_t, gid_t)\n     id-change-call · "
         ),
         "{text}"
     );
     assert_eq!(
-        text.matches("  fix  Start as the user and groups the program needs")
+        text.matches("   fix  Start as the user and groups the program needs")
             .count(),
         1,
         "{text}"
@@ -97,7 +97,8 @@ fn every_target_gets_a_line_and_runs_are_byte_identical() {
         "rootless-podman",
     ] {
         assert!(
-            text.lines().any(|l| l.starts_with(&format!("{target}  "))),
+            text.lines()
+                .any(|l| l.starts_with(&format!("  {target}  "))),
             "{target} in {text}"
         );
     }

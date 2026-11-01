@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use anstyle::{AnsiColor, Style};
+use anstyle::{AnsiColor, Color, Style};
 use boxt_core::fact::GuardChain;
 use boxt_core::identity::FindingId;
 use boxt_core::labels;
@@ -70,8 +70,18 @@ pub struct TerminalOptions {
 
 const BOLD: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
-const HEADER: Style = Style::new().bold().underline();
+const HEADER: Style = Style::new().dimmed().underline();
+const YELLOW: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow)));
+const CYAN: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
+const MAGENTA: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Magenta)));
+const ACCENT: Style = MAGENTA.bold();
+const FIX: Style = Style::new()
+    .bold()
+    .fg_color(Some(Color::Ansi(AnsiColor::Green)));
 const TABLE_MIN_WIDTH: usize = 72;
+const GUTTER: &str = "   ";
+const INDENT: &str = "  ";
+const MIN_SIGNATURE_COLUMN: usize = 16;
 
 pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     let p = Painter {
@@ -80,44 +90,44 @@ pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     let width = options.width.clamp(MIN_WIDTH, MAX_WIDTH);
     let inputs = Inputs::of(result);
     let mut out = String::new();
-    let mut header = vec![Para::new().plain(&result.input_scope_text)];
+    let mut header = vec![Para::new().text(&result.input_scope_text, YELLOW)];
     if result.host_dependent {
-        header.push(Para::new().plain(labels::HOST_DEPENDENT_TEXT));
+        header.push(Para::new().text(labels::HOST_DEPENDENT_TEXT, YELLOW));
     }
-    boxed(&mut out, &p, width, &header);
+    boxed(&mut out, &p, width, YELLOW, &header);
     out.push('\n');
     targets(&mut out, &p, width, result);
     out.push('\n');
+    out.push_str(&p.paint(DIM, &"─".repeat(width)));
+    out.push('\n');
+    let heading = Para::new().text("Findings", BOLD).plain("   ");
+    let heading = if result.groups.is_empty() {
+        heading.plain("none")
+    } else {
+        heading
+            .text(mark(Confidence::Found), BOLD)
+            .plain(&format!(" {}   ", labels::confidence(Confidence::Found)))
+            .text(mark(Confidence::Suspected), DIM)
+            .plain(&format!(" {}", labels::confidence(Confidence::Suspected)))
+    };
+    emit(&mut out, &p, width, &heading, " ", "   ");
+    out.push('\n');
     let by_id: BTreeMap<&FindingId, &ReportedFinding> =
         result.findings.iter().map(|f| (&f.id, f)).collect();
-    let legend = if result.groups.is_empty() {
-        "none".to_owned()
-    } else {
-        format!(
-            "{} {}  {} {}",
-            mark(Confidence::Found),
-            labels::confidence(Confidence::Found),
-            mark(Confidence::Suspected),
-            labels::confidence(Confidence::Suspected)
-        )
-    };
-    emit(
-        &mut out,
-        &p,
-        width,
-        &Para::new()
-            .text("Findings", BOLD)
-            .plain(&format!("   {legend}")),
-        "",
-        "  ",
-    );
-    out.push('\n');
     for group in &result.groups {
         group_block(&mut out, &p, width, &inputs, &by_id, group);
-        out.push('\n');
     }
     not_checked(&mut out, &p, width, &inputs, result, options.all);
     out
+}
+
+fn tier_color(tier: Tier) -> AnsiColor {
+    match tier {
+        Tier::Blocked => AnsiColor::Red,
+        Tier::NeedsWindows | Tier::NeedsCodeChange => AnsiColor::Yellow,
+        Tier::ReadyWithConfig => AnsiColor::Cyan,
+        Tier::Ready => AnsiColor::Green,
+    }
 }
 
 fn mark(confidence: Confidence) -> &'static str {
@@ -130,11 +140,11 @@ fn mark(confidence: Confidence) -> &'static str {
 fn badge(p: &Painter, tier: Tier) -> Vec<(Style, String)> {
     let label = labels::tier(tier);
     if p.styled {
-        let (bg, fg) = match tier {
-            Tier::Blocked => (AnsiColor::Red, AnsiColor::BrightWhite),
-            Tier::NeedsWindows | Tier::NeedsCodeChange => (AnsiColor::Yellow, AnsiColor::Black),
-            Tier::ReadyWithConfig => (AnsiColor::Cyan, AnsiColor::Black),
-            Tier::Ready => (AnsiColor::Green, AnsiColor::Black),
+        let bg = tier_color(tier);
+        let fg = if tier == Tier::Blocked {
+            AnsiColor::BrightWhite
+        } else {
+            AnsiColor::Black
         };
         let style = Style::new()
             .bold()
@@ -233,26 +243,28 @@ fn targets(out: &mut String, p: &Painter, width: usize, result: &Result) {
             widths[i + 2] = widths[i + 2].max(n.width());
         }
     }
-    let total = widths.iter().sum::<usize>() + 2 * (widths.len() - 1);
+    let total = INDENT.width() + widths.iter().sum::<usize>() + GUTTER.width() * (widths.len() - 1);
     if width >= TABLE_MIN_WIDTH && total <= width {
-        let mut header = String::new();
-        for (i, h) in headers.iter().enumerate() {
-            if i > 0 {
-                header.push_str("  ");
-            }
-            header.push_str(&aligned(h, widths[i], i >= 2));
-        }
-        out.push_str(&p.paint(HEADER, &header));
+        let header: Vec<String> = headers
+            .iter()
+            .enumerate()
+            .map(|(i, h)| aligned(h, widths[i], i >= 2))
+            .collect();
+        out.push_str(INDENT);
+        out.push_str(&p.paint(HEADER, &header.join(GUTTER)));
         out.push('\n');
-        for (row, (target, badge, numbers)) in cells.iter().enumerate() {
-            let band = if row % 2 == 1 { DIM } else { PLAIN };
-            out.push_str(&p.paint(band, target));
-            out.push_str(&" ".repeat(widths[0] - target.width() + 2));
+        for (t, (target, badge, numbers)) in rows.iter().zip(&cells) {
+            let tint = Style::new().fg_color(Some(tier_color(t.range.with_suspected).into()));
+            out.push_str(INDENT);
+            out.push_str(target);
+            out.push_str(&" ".repeat(widths[0] - target.width()));
+            out.push_str(GUTTER);
             out.push_str(&badge.paint(p));
             out.push_str(&" ".repeat(widths[1] - badge.columns()));
             for (i, n) in numbers.iter().enumerate() {
-                out.push_str(&" ".repeat(2 + widths[i + 2] - n.width()));
-                out.push_str(&p.paint(band, n));
+                out.push_str(GUTTER);
+                out.push_str(&" ".repeat(widths[i + 2] - n.width()));
+                out.push_str(&p.paint(tint, n));
             }
             out.push('\n');
         }
@@ -263,16 +275,20 @@ fn targets(out: &mut String, p: &Painter, width: usize, result: &Result) {
                 .plain("  ")
                 .atom(badge)
                 .plain(&format!("  {}", target_counts(t)));
-            emit(out, p, width, &para, "", "  ");
+            emit(out, p, width, &para, INDENT, "    ");
         }
     }
-    let files = Para::new().plain(&format!(
-        "{} files read · {} not checked · {}",
-        result.counts.read,
-        result.counts.not_checked,
-        sm3_share(&result.sm3)
-    ));
-    emit(out, p, width, &files, "", "  ");
+    out.push('\n');
+    let files = Para::new().text(
+        &format!(
+            "{} files read · {} not checked · {}",
+            result.counts.read,
+            result.counts.not_checked,
+            sm3_share(&result.sm3)
+        ),
+        DIM,
+    );
+    emit(out, p, width, &files, INDENT, "    ");
 }
 
 fn aligned(text: &str, width: usize, right: bool) -> String {
@@ -317,46 +333,115 @@ fn group_block(
     group: &Group,
 ) {
     let GroupKey::Behaviour(behaviour) = &group.key;
+    let name = format!("▌{behaviour}");
     let tally = counts(group.found, group.suspected);
-    let used = behaviour.as_str().width() + 2 + tally.width();
-    let mut heading = Para::new()
-        .text(behaviour.as_str(), BOLD)
-        .plain(&format!("  {tally}"));
+    let used = 1 + name.width() + 2 + tally.width();
+    let mut heading = Para::new().text(&name, ACCENT).plain(&format!("  {tally}"));
     let inline = match group.rules.as_slice() {
         [only] if used + 2 + only.rule.as_str().width() <= width => {
             let pad = width - used - only.rule.as_str().width();
-            heading = heading.plain(&" ".repeat(pad)).plain(only.rule.as_str());
+            heading = heading
+                .plain(&" ".repeat(pad))
+                .text(only.rule.as_str(), DIM);
             true
         }
         _ => false,
     };
-    emit(out, p, width, &heading, "", "  ");
-    let base = if inline { "  " } else { "    " };
+    emit(out, p, width, &heading, " ", "   ");
+    let base = if inline { "   " } else { "     " };
     for section in &group.rules {
         if !inline {
             emit(
                 out,
                 p,
                 width,
-                &Para::new().plain(section.rule.as_str()),
-                "  ",
-                "    ",
+                &Para::new().text(section.rule.as_str(), DIM),
+                "   ",
+                "     ",
             );
         }
-        emit(
-            out,
-            p,
-            width,
-            &Para::new().plain(&escape(&section.fix.as_str().into())),
-            &format!("{base}fix  "),
-            &format!("{base}     "),
-        );
+        let fix = Para::new()
+            .text("fix", FIX)
+            .plain("  ")
+            .plain(&escape(&section.fix.as_str().into()));
+        emit(out, p, width, &fix, base, &format!("{base}     "));
+        out.push('\n');
         for id in &section.findings {
             if let Some(reported) = by_id.get(id) {
                 finding_lines(out, p, width, inputs, base, reported);
+                out.push('\n');
             }
         }
     }
+}
+
+fn place_para(para: Para, inputs: &Inputs, loc: &Location) -> Para {
+    let mut parts: Vec<String> = loc.frames.iter().map(|f| escape(&f.name)).collect();
+    if let Some(path) = &loc.path {
+        parts.push(escape(path.as_text()));
+    }
+    let para = inputs
+        .prefix(para, loc.input.index)
+        .value(&parts.join("!"), CYAN);
+    match loc.line {
+        Some(line) => para.glue(&format!(":{line}"), DIM),
+        None => para,
+    }
+}
+
+fn parameters(signature: &str) -> Option<Vec<&str>> {
+    let inner = signature.strip_prefix('(')?;
+    let mut pieces = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let bytes = inner.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' | b'<' | b'{' => depth += 1,
+            b')' | b']' | b'>' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 && bytes.get(i + 1) == Some(&b' ') => {
+                pieces.push(&inner[start..i + 2]);
+                start = i + 2;
+            }
+            _ => {}
+        }
+    }
+    pieces.push(&inner[start..]);
+    Some(pieces)
+}
+
+fn signature_lines(pieces: &[&str], avail: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for piece in pieces {
+        let shown = piece.trim_end_matches(' ');
+        if current.width() + shown.width() <= avail {
+            current.push_str(piece);
+            continue;
+        }
+        if !current.is_empty() {
+            lines.push(current.trim_end_matches(' ').to_owned());
+            current = String::new();
+        }
+        if shown.width() <= avail {
+            current.push_str(piece);
+        } else {
+            let mut out = String::new();
+            emit(
+                &mut out,
+                &Painter { styled: false },
+                avail,
+                &Para::new().value(shown, PLAIN),
+                "",
+                "",
+            );
+            lines.extend(out.lines().map(str::to_owned));
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current.trim_end_matches(' ').to_owned());
+    }
+    lines
 }
 
 fn finding_lines(
@@ -368,27 +453,75 @@ fn finding_lines(
     reported: &ReportedFinding,
 ) {
     let f = &reported.finding;
+    let first = format!("{base}{} ", mark(f.confidence));
     let under = format!("{base}  ");
-    let place = location(Para::new(), inputs, &f.location, true);
-    emit(
-        out,
-        p,
-        width,
-        &place,
-        &format!("{base}{} ", mark(f.confidence)),
-        &under,
-    );
+    let place = place_para(Para::new(), inputs, &f.location);
+    let mut placed = false;
+    if let Scope::Function {
+        qualified_name,
+        signature,
+    } = &f.location.scope
+    {
+        let name = escape(qualified_name);
+        let signature = escape(signature);
+        let head = first.width() + place.columns() + GUTTER.width() + name.width() + 1;
+        if let Some(pieces) = parameters(&signature)
+            && head + MIN_SIGNATURE_COLUMN <= width
+        {
+            let lines = signature_lines(&pieces, width - head);
+            out.push_str(&first);
+            out.push_str(&place.paint(p));
+            out.push_str(GUTTER);
+            out.push_str(&p.paint(BOLD, &name));
+            out.push_str(&p.paint(DIM, "("));
+            for (i, text) in lines.iter().enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                    out.push_str(&" ".repeat(head));
+                }
+                out.push_str(&p.paint(DIM, text));
+            }
+            out.push('\n');
+            placed = true;
+        } else {
+            let (opening, rest) = signature
+                .split_once(' ')
+                .map_or((signature.as_str(), ""), |(a, b)| (a, b));
+            let opening = if rest.is_empty() {
+                opening.to_owned()
+            } else {
+                format!("{opening} ")
+            };
+            let para = place
+                .clone()
+                .plain(GUTTER)
+                .value(&name, BOLD)
+                .glue(&opening, DIM)
+                .value(rest, DIM);
+            emit(out, p, width, &para, &first, &under);
+            placed = true;
+        }
+    }
+    if !placed {
+        let para = match &f.location.scope {
+            Scope::File | Scope::Function { .. } => place,
+            Scope::Symbol(symbol) => place.plain("   symbol ").value(&escape(symbol), PLAIN),
+            Scope::UnitSection { section, key } => place
+                .plain(GUTTER)
+                .value(&format!("[{}] {}", escape(section), escape(key)), PLAIN),
+            Scope::ConfigKey(key) => place.plain("   key ").value(&escape(key), PLAIN),
+            Scope::Script(name) => place.plain(&format!("   script {}", name.name())),
+        };
+        emit(out, p, width, &para, &first, &under);
+    }
     let ids = Para::new().text(&format!("{} · {}", f.evidence.definition, reported.id), DIM);
     emit(out, p, width, &ids, &under, &under);
     if !f.guards.is_empty() {
-        emit(
-            out,
-            p,
-            width,
-            &Para::new().value(&guards(&f.guards), PLAIN),
-            &format!("{under}guard "),
-            &format!("{under}      "),
-        );
+        let guard = Para::new()
+            .text("guard", MAGENTA)
+            .plain("  ")
+            .value(&guards(&f.guards), PLAIN);
+        emit(out, p, width, &guard, &under, &format!("{under}       "));
     }
 }
 
@@ -509,7 +642,10 @@ fn not_checked_para(inputs: &Inputs, entry: &NotCheckedEntry) -> Para {
         NotCheckedEntry::File {
             location: loc,
             outcome,
-        } => outcome_para(location(Para::new(), inputs, loc, false).glue(":"), outcome),
+        } => outcome_para(
+            location(Para::new(), inputs, loc, false).glue(":", PLAIN),
+            outcome,
+        ),
         NotCheckedEntry::Regions {
             location: loc,
             reason,
@@ -534,14 +670,14 @@ fn not_checked_para(inputs: &Inputs, entry: &NotCheckedEntry) -> Para {
                 ),
             };
             location(Para::new(), inputs, loc, false)
-                .glue(":")
+                .glue(":", PLAIN)
                 .plain(&format!(" {text}"))
         }
         NotCheckedEntry::DynamicLoad {
             location: loc,
             symbol,
         } => location(Para::new(), inputs, loc, true)
-            .glue(":")
+            .glue(":", PLAIN)
             .plain(" loads code at run time through ")
             .value(&escape(symbol), PLAIN),
     }
