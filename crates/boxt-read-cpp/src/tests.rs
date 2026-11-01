@@ -7,7 +7,7 @@ use boxt_core::outcome::{Details, NotCheckedReason};
 use boxt_core::read::{Exceeded, FactSink, NotRead, ReadCtx, Reader};
 use boxt_core::settings::Encoding;
 
-use super::{CppReader, definitions};
+use super::{CppReader, definitions, identify};
 
 #[derive(Default)]
 struct Sink {
@@ -697,4 +697,52 @@ fn the_reader_charges_its_buffers() {
         NotCheckedReason::LimitExceeded(LimitName::Memory)
     );
     assert!(read_with("a.c", src.as_bytes(), &Limits::default(), None, None).is_ok());
+}
+
+fn identified(name: &str, bytes: &[u8], listed: bool) -> Result<bool, NotRead> {
+    let mut ctx = ReadCtx::new(base(name), &Limits::default(), None);
+    identify(bytes, &mut ctx, listed)
+}
+
+#[test]
+fn a_listed_file_is_cxx_unless_it_holds_nul() {
+    assert_eq!(identified("a.c", b"#include <stdio.h>\n", true), Ok(true));
+    assert_eq!(
+        identified("a.c", b"int f(void) { return 0; }\n", true),
+        Ok(true)
+    );
+    assert_eq!(
+        identified("a.h", b"config_require(disman/event);\n", true),
+        Ok(true)
+    );
+    assert_eq!(
+        identified("a.c", b"This is not C at all, only prose!\n", true),
+        Ok(true)
+    );
+    assert_eq!(identified("a.c", b"\0\0\x01\x02int f;\0", true), Ok(false));
+    assert_eq!(
+        identified("a.c", b"caf\xe9 int x;\n", true),
+        Err(NotRead::new(NotCheckedReason::EncodingUndeclared))
+    );
+    let utf16: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain("#include <x.h>\n".encode_utf16().flat_map(u16::to_le_bytes))
+        .collect();
+    assert_eq!(identified("a.c", &utf16, true), Ok(true));
+}
+
+#[test]
+fn an_extensionless_file_needs_most_lines_readable_and_a_c_construct() {
+    let config = b"#include <stdio.h>\n\nint main(void)\n{\n  return puts(\"hi\");\n}\n";
+    assert_eq!(identified("config", config, false), Ok(true));
+    assert_eq!(
+        identified("README", b"Build it with make.\nThen run it.\n", false),
+        Ok(false)
+    );
+    assert_eq!(identified("decls", b"int x;\nint y;\n", false), Ok(false));
+    let mostly_prose =
+        b"#define X 1\nthis is prose, and more prose.\nmore: prose here!\nand here?\n";
+    assert_eq!(identified("notes", mostly_prose, false), Ok(false));
+    assert_eq!(identified("bytes", b"caf\xe9\n", false), Ok(false));
+    assert_eq!(identified("empty", b"", false), Ok(false));
 }

@@ -4,9 +4,14 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use boxt_collector::CapAllocator;
-use boxt_collector::bench::{cxx_jobs, parse_in_process};
-use boxt_collector::pool::{self, PoolConfig};
+use boxt_collector::bench::{cxx_jobs, measure_reads, parse_in_process};
+use boxt_collector::boxt_core::limits::{LimitName, Limits};
+use boxt_collector::boxt_core::outcome::{FileOutcome, sm3_share, verdict_counts};
+use boxt_collector::boxt_core::settings::Settings;
+use boxt_collector::path::text_from_path;
+use boxt_collector::pool::{self, PoolConfig, default_jobs};
 use boxt_collector::worker::WORKER_SUBCOMMAND;
+use boxt_collector::{Collected, RunOptions, RunStats};
 use clap::{Parser, Subcommand};
 
 #[global_allocator]
@@ -33,6 +38,26 @@ enum Command {
         #[arg(long)]
         jobs: Option<NonZeroU32>,
     },
+    #[command(hide = true)]
+    Measure {
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        #[arg(long)]
+        jobs: Option<NonZeroU32>,
+    },
+    #[command(hide = true)]
+    Collect {
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        #[arg(long)]
+        jobs: Option<NonZeroU32>,
+        #[arg(long = "limit", value_name = "NAME=VALUE")]
+        limits: Vec<String>,
+        #[arg(long)]
+        measure: bool,
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -41,7 +66,211 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::Worker) => boxt_collector::worker::run(),
         Some(Command::Bench { root, runs, jobs }) => bench(&root, runs, jobs),
+        Some(Command::Measure { inputs, jobs }) => measure(&inputs, jobs),
+        Some(Command::Collect {
+            inputs,
+            jobs,
+            limits,
+            measure,
+            list,
+        }) => collect(&inputs, jobs, &limits, measure, list),
         None => ExitCode::SUCCESS,
+    }
+}
+
+fn parse_limits(given: &[String]) -> Result<Limits, String> {
+    let mut limits = Limits::default();
+    for spec in given {
+        let (name, value) = spec
+            .split_once('=')
+            .ok_or_else(|| format!("--limit {spec}: expected NAME=VALUE"))?;
+        let limit = LimitName::from_flag(name).ok_or_else(|| format!("unknown limit {name}"))?;
+        let value = value
+            .parse::<u64>()
+            .map_err(|_| format!("--limit {spec}: not a whole number"))?;
+        limits.set(limit, value).map_err(|e| e.to_string())?;
+    }
+    limits.validate().map_err(|e| e.to_string())?;
+    Ok(limits)
+}
+
+fn collect(
+    inputs: &[PathBuf],
+    jobs: Option<NonZeroU32>,
+    limits: &[String],
+    measure: bool,
+    list: bool,
+) -> ExitCode {
+    let limits = match parse_limits(limits) {
+        Ok(limits) => limits,
+        Err(e) => {
+            eprintln!("boxt: {e}");
+            return ExitCode::from(EXIT_ERROR);
+        }
+    };
+    let settings = Settings {
+        inputs: inputs.iter().map(|p| text_from_path(p)).collect(),
+        targets: Default::default(),
+        limits,
+        encodings: Vec::new(),
+        excludes: Vec::new(),
+        ignored_macros: Default::default(),
+        jobs,
+        compile_database: None,
+    };
+    let mut options = match RunOptions::current() {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("boxt: cannot find its own executable: {e}");
+            return ExitCode::from(EXIT_ERROR);
+        }
+    };
+    options.measure = measure;
+    let (collected, stats) = match boxt_collector::run_with(&settings, &options) {
+        Ok(done) => done,
+        Err(e) => {
+            eprintln!("boxt: {e}");
+            return ExitCode::from(EXIT_ERROR);
+        }
+    };
+    if list {
+        for file in collected.files.iter() {
+            if file.outcome.file != FileOutcome::Read || !file.regions.is_empty() {
+                println!(
+                    "{} {:?} {:?} lines {:?} regions {}",
+                    String::from_utf8_lossy(file.key.job_path.as_bytes()),
+                    file.outcome.file_kind,
+                    file.outcome.file,
+                    file.outcome.lines.map(|l| l.lines),
+                    file.regions.len()
+                );
+            }
+        }
+    }
+    print_counts(&collected);
+    if measure {
+        print_measure(&collected, &stats);
+    }
+    ExitCode::SUCCESS
+}
+
+fn print_counts(collected: &Collected) {
+    let files = &collected.files;
+    let counts = verdict_counts(files.iter().map(|f| &f.outcome.file));
+    let aggregates = files
+        .iter()
+        .filter(|f| matches!(f.outcome.file, FileOutcome::Aggregate { .. }))
+        .count();
+    let host = files.iter().filter(|f| f.outcome.host_dependent).count();
+    let facts: usize = collected.facts.iter().map(|f| f.facts.len()).sum();
+    let sm3 = sm3_share(files.iter());
+    let lines = sm3.lines.map_or("n/a".to_string(), |l| {
+        format!(
+            "{}{}/{}",
+            if l.is_lower_bound() { "at least " } else { "" },
+            l.numerator,
+            l.denominator
+        )
+    });
+    let shares = sm3.files.map_or("n/a".to_string(), |f| {
+        format!("{}/{}", f.numerator, f.denominator)
+    });
+    println!(
+        "outcomes {} read {} not-checked {} aggregates {aggregates} host-dependent {host} facts {facts} sm3-lines {lines} sm3-files {shares} tables-cut {:?} digest {:016x}",
+        files.len(),
+        counts.read,
+        counts.not_checked,
+        collected.macro_tables_cut.as_slice(),
+        collected.digest(),
+    );
+}
+
+fn print_measure(collected: &Collected, stats: &RunStats) {
+    let cut = |reason| -> u64 {
+        collected
+            .files
+            .iter()
+            .map(|f| match f.outcome.file {
+                FileOutcome::NotChecked { reason: r, .. } if r == reason => 1,
+                FileOutcome::Aggregate {
+                    reason: r,
+                    count,
+                    at_least,
+                } if r == reason => count.unwrap_or(at_least.max(1)),
+                _ => 0,
+            })
+            .sum()
+    };
+    use boxt_collector::boxt_core::outcome::NotCheckedReason::LimitExceeded as Over;
+    println!(
+        "measure entries {} largest-file {} longest-job-ms {} run-ms {} worker-peak-bytes {} macro-table-bytes {} most-entry-facts {}",
+        stats.walked,
+        stats.largest_file,
+        stats.longest_job.as_millis(),
+        stats.elapsed.as_millis(),
+        stats.worker_peak_bytes,
+        stats.macro_table_bytes,
+        stats.most_entry_facts,
+    );
+    println!(
+        "cut-files file-size {} work {} memory {} syntax-depth {} entry-facts {} entry-message-bytes {} watchdog {} worker-memory-cap {} total-entries {} run-watchdog {} macro-table-bytes-trees {}",
+        cut(Over(LimitName::FileSize)),
+        cut(Over(LimitName::Work)),
+        cut(Over(LimitName::Memory)),
+        cut(Over(LimitName::SyntaxDepth)),
+        cut(Over(LimitName::EntryFacts)),
+        cut(Over(LimitName::EntryMessageBytes)),
+        cut(Over(LimitName::Watchdog)),
+        cut(Over(LimitName::WorkerMemoryCap)),
+        cut(Over(LimitName::TotalEntries)),
+        cut(Over(LimitName::RunWatchdog)),
+        collected.macro_tables_cut.len(),
+    );
+}
+
+fn measure(inputs: &[PathBuf], jobs: Option<NonZeroU32>) -> ExitCode {
+    let raised = Limits::default()
+        .with(LimitName::Work, u64::MAX)
+        .and_then(|l| l.with(LimitName::Memory, u64::MAX / 8))
+        .and_then(|l| l.with(LimitName::WorkerMemoryCap, u64::MAX))
+        .and_then(|l| l.with(LimitName::SyntaxDepth, u64::MAX))
+        .and_then(|l| l.with(LimitName::MacroTableBytes, u64::MAX))
+        .and_then(|l| l.with(LimitName::FileSize, u64::MAX))
+        .and_then(|l| l.with(LimitName::EntryFacts, u64::MAX));
+    let inputs: Vec<_> = inputs.iter().map(|p| text_from_path(p)).collect();
+    let peaks = raised
+        .map_err(|e| std::io::Error::other(e.to_string()))
+        .and_then(|raised| measure_reads(&inputs, &raised, &Limits::default(), default_jobs(jobs)));
+    match peaks {
+        Ok(p) => {
+            println!(
+                "in-process candidates {} read-as-cxx {} not-cxx {} not-fetched {} not-read {} largest {} work {} memory {} memory-per-kib {} syntax-depth {} facts {}",
+                p.candidates,
+                p.files,
+                p.not_cxx,
+                p.not_fetched,
+                p.not_read,
+                p.largest,
+                p.work,
+                p.memory,
+                p.memory_per_kib,
+                p.syntax_depth,
+                p.facts,
+            );
+            println!(
+                "over-default file-size {} work {} memory {} syntax-depth {} entry-facts {}",
+                p.over_file_size,
+                p.over_work,
+                p.over_memory,
+                p.over_syntax_depth,
+                p.over_entry_facts,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("boxt: in-process measurement failed: {e}");
+            ExitCode::from(EXIT_ERROR)
+        }
     }
 }
 

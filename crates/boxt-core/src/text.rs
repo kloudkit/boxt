@@ -45,6 +45,42 @@ impl Text {
         Self::from_bytes(out)
     }
 
+    pub fn to_wide(&self) -> Option<Vec<u16>> {
+        let bytes = self.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            let lead = bytes[i];
+            let (len, min, init) = match lead {
+                0x00..0x80 => (1, 0, u32::from(lead)),
+                0xC2..0xE0 => (2, 0x80, u32::from(lead & 0x1F)),
+                0xE0..0xF0 => (3, 0x800, u32::from(lead & 0x0F)),
+                0xF0..0xF5 => (4, 0x10000, u32::from(lead & 0x07)),
+                _ => return None,
+            };
+            let tail = bytes.get(i + 1..i + len)?;
+            let mut cp = init;
+            for &b in tail {
+                if b & 0xC0 != 0x80 {
+                    return None;
+                }
+                cp = (cp << 6) | u32::from(b & 0x3F);
+            }
+            if cp < min || cp > 0x10FFFF {
+                return None;
+            }
+            if cp >= 0x10000 {
+                let v = cp - 0x10000;
+                out.push(0xD800 | (v >> 10) as u16);
+                out.push(0xDC00 | (v & 0x3FF) as u16);
+            } else {
+                out.push(cp as u16);
+            }
+            i += len;
+        }
+        Some(out)
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         match &self.0 {
             Repr::Utf8(s) => s.as_bytes(),
@@ -365,6 +401,36 @@ mod tests {
 
         let lone_low = Text::from_wide(&[0xDC00]);
         assert_eq!(lone_low.as_bytes(), &[0xED, 0xB0, 0x80]);
+    }
+
+    #[test]
+    fn to_wide_inverts_from_wide() {
+        let cases: [&[u16]; 6] = [
+            &[],
+            &[0x61, 0x20AC, 0xD83D, 0xDE00],
+            &[0x61, 0xD800, 0x62],
+            &[0xDC00],
+            &[0xDBFF, 0xDFFF, 0xD800],
+            &[0x7F, 0x80, 0x7FF, 0x800, 0xFFFF],
+        ];
+        for units in cases {
+            assert_eq!(Text::from_wide(units).to_wide().as_deref(), Some(units));
+        }
+        let lone_high = Text::from_bytes(vec![0x61, 0xED, 0xA0, 0x80]);
+        assert!(!lone_high.is_utf8());
+        assert_eq!(lone_high.to_wide(), Some(vec![0x61, 0xD800]));
+        let lone_low = Text::from_bytes(vec![0xED, 0xBF, 0xBF]);
+        assert_eq!(lone_low.to_wide(), Some(vec![0xDFFF]));
+        for bad in [
+            &[0xFF][..],
+            &[0xC0, 0x80],
+            &[0xE0, 0x80, 0x80],
+            &[0xF4, 0x90, 0x80, 0x80],
+            &[0xE2, 0x82],
+            &[0x61, 0x80],
+        ] {
+            assert_eq!(Text::from_bytes(bad.to_vec()).to_wide(), None, "{bad:?}");
+        }
     }
 
     #[test]

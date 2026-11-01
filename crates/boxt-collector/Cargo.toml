@@ -27,3 +27,7 @@ fault-fixtures = []
 name = "faults"
 harness = false
 required-features = ["fault-fixtures"]
+
+[[test]]
+name = "collect"
+harness = false

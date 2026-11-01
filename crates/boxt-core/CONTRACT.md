@@ -66,7 +66,10 @@ format that is not self-describing and refuses `deserialize_any`. Story 1.4 kept
 - Input-derived strings are `Text`: UTF-8 when valid, the raw bytes otherwise. `from_bytes`
   picks the form, so one byte sequence has one value.
 - `from_wide` turns a Windows name into WTF-8: paired surrogates become UTF-8, a lone
-  surrogate becomes its 3-byte generalized UTF-8 form.
+  surrogate becomes its 3-byte generalized UTF-8 form. `to_wide` is its inverse, used to
+  turn an input path or a job's path back into a Windows name; it gives `None` for bytes
+  that are not generalized UTF-8 (overlong forms, code points past U+10FFFF, truncated
+  sequences), so `Text::from_wide(w).to_wide() == Some(w)` for every `w`.
 - `Text` compares and sorts by its byte form.
 - In a human-readable format (JSON, YAML): a string when valid UTF-8, else
   `{"bytes_base64": "<standard base64, padded>"}`. Decoding accepts both, and a
@@ -205,6 +208,18 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   then fails decoding is `file_kind: Source`, `NotChecked` with the FR-10 reason that
   `boxt-read-cpp` returns (`EncodingUndeclared` or `InvalidForDeclaredEncoding`), and stays
   in SM-3; it is never `NoReader`.
+- The content check (Story 1.6, AD-14) is `boxt_read_cpp::identify`, run in the worker on
+  the decoded text, with the file's declared encoding, and charged to the file's
+  `WorkBudget`, which the read then continues:
+  - a file with a listed extension is C/C++ unless its decoded text holds a NUL (operator
+    renegotiation, 2026-11-01: no construct check, so a header of macro calls only, such
+    as net-snmp's `config_require(...)` files, stays in SM-3);
+  - a file whose name has no `.` after its first byte (extensionless) is C/C++, read as a
+    header (`classify` gives `Header`, the grammar order is `.h`'s), only when at least 90%
+    of its lines lie outside every `ERROR` and `MISSING` node of one parse, in C or else
+    in C++, and it has a function definition, an `#include` or a `#define`; a decode
+    failure or a NUL makes it not C/C++;
+  - any other file is `NotChecked{NoReader}` with `file_kind: None`, and is not opened.
 
 ### Guards (AD-18, S-F7)
 
@@ -314,24 +329,27 @@ are:
 - `ReadCtx` holds the base `Location` of the file being read (input, frames, path; line
   `None`, scope `File`, or the script's scope), the file's declared `encoding`, one
   `WorkBudget`, and optionally the tree's `MacroTable`, borrowed: `with_macros(&table)`
-  attaches it and `macros()` reads it. With none attached the C/C++ reader expands nothing.
-  Until Story 1.6 delivers tables the worker attaches none. Readers build each fact's
-  location with `ctx.at(line, scope)`. Readers never see an encoding pattern: the router
-  resolves the declaration with `WorkerSettings::resolve_encoding`, the first declaration
-  whose pattern matches the file's path in its innermost root, and passes only the result
-  (`None` when nothing matches). It matches as the collector does: byte-exact, with no case
-  folding, except AD-15's Windows fallback for paths on disk, which encoding declarations
-  follow too; never inside a container. The budget is private: a reader can only spend it,
-  through `work`, `buffer`, `release`, `file_size`, `entry` and `decompression`, and read it
+  attaches it and `macros()` reads it. With none attached the C/C++ reader expands
+  nothing. The worker attaches its tree's complete table, when it holds one, to every
+  `Route` job. Readers build each fact's location with `ctx.at(line, scope)`. Readers
+  never see an encoding pattern: the router resolves the declaration with
+  `WorkerSettings::resolve_encoding`, the first declaration whose pattern matches the
+  file's path in its innermost root, and passes only the result (`None` when nothing
+  matches). It matches as the collector does: byte-exact, with no case folding, except
+  AD-15's Windows fallback for paths on disk, which encoding declarations follow too;
+  never inside a container. The budget is private: a reader can only spend it, through
+  `work`, `buffer`, `release`, `file_size`, `entry` and `decompression`, and read it
   through `budget()`. Only the router builds a context with a given budget (`with_budget`)
   and takes it back (`into_budget`).
-- `WorkBudget` counts against `Limits`: `work` steps (`Work`; tree-sitter steps through its
-  progress callback), `buffer` and `release` for bytes held in memory (`Memory`, the counted
-  per-file buffer), and depth. `syntax_depth(depth)` checks one syntax tree's depth against
-  `SyntaxDepth`; it is a maximum, not a running total. Each file and entry gets a fresh
-  budget for work and bytes; a container's entries get `nested()`, one level deeper, which
-  fails past `ArchiveDepth`. A value over its limit is `Exceeded{limit, value, max}`, which
-  becomes `NotChecked{LimitExceeded(limit), Measured{value, limit: max}}`.
+- `WorkBudget` counts against `Limits`: `work` steps (`Work`; tree-sitter steps through
+  its progress callback), `buffer` and `release` for bytes held in memory (`Memory`, the
+  counted per-file buffer), and depth. `syntax_depth(depth)` checks one syntax tree's
+  depth against `SyntaxDepth`; it is a maximum, not a running total. `peak_buffered()` and
+  `deepest_syntax()` report a budget's high-water marks; they decide nothing and exist for
+  the limit measurement. Each file and entry gets a fresh budget for work and bytes; a
+  container's entries get `nested()`, one level deeper, which fails past `ArchiveDepth`. A
+  value over its limit is `Exceeded{limit, value, max}`, which becomes
+  `NotChecked{LimitExceeded(limit), Measured{value, limit: max}}`.
 - `file_size(size)` refuses a file or entry over `FileSize`, before any of it is read.
 - The decompression ratio is decompressed bytes over compressed bytes, per compressed
   stream (a gzip, xz, bzip2 or zstd stream, a zip entry's deflate data). The reader takes
@@ -480,9 +498,88 @@ are:
   `Route` job resumes.
 - Every walked file that `classify` and the extension table make C/C++ gets a `Definitions`
   job, `NotInCompileDatabase` files included, since the macros of a header apply to the
-  files that include it. An `OutOfScope` file gets none.
+  files that include it. An `OutOfScope` file gets none. The collector cannot see content,
+  so it also sends one for every extensionless file; the worker's content check decides,
+  and a file it does not identify answers `NotChecked{NoReader}` and no definitions.
 - A worker runs one job at a time, on one thread (RA2-M8). Parallelism comes from the pool,
   one worker per core by default.
+- The worker opens a job's file without following a link and without blocking (`O_NOFOLLOW
+  | O_NONBLOCK`; on Windows `FILE_FLAG_OPEN_REPARSE_POINT` and
+  `FILE_FLAG_BACKUP_SEMANTICS`, so a directory opens as on Unix), then checks the type on
+  the open handle. For a `WholeInput` job it first resolves `input.given` with
+  `canonicalize`, which is the one follow of an input root, and opens the result. A file
+  that became a link is `Symlink(Unresolved)`, one that became a special file or reparse
+  point is `SpecialFile(kind)`, both with `file_kind: None`; a directory is
+  `Unreadable(IsADirectory)`. A file over `FileSize` by the handle's size is
+  `LimitExceeded(FileSize)` with `Measured{size, limit}`, no line count, and no byte read;
+  otherwise exactly the handle's size is read. An I/O error on the open or the read is
+  `Unreadable(IoKind)` with the file kind by name. The worker reads and routes the file
+  before it sends `Opened{[]}`, since `Opened` carries the routed `FileKind`.
+
+### Walk and run (AD-3, AD-4, AD-6, Story 1.6)
+
+- `boxt_collector::run(&Settings) -> Result<Collected, RunError>` is the one entry point.
+  `Collected` holds the files (`SortedVec<CollectedFile>`), each read file's facts with
+  its outcome's `CanonicalKey` (facts in `Location` order, a stable sort over the reader's
+  order), `macro_tables_cut` and the trees whose definitions were host-dependent.
+  `RunError` is `NoInputs`, `Walk`, `CompileDatabase`, `Pool`, `Executable`, `MacroTable`
+  and `NothingRead` (no `Read` outcome); the bin maps each to exit 2.
+- The main process reads only metadata. Each input is `metadata`'d, which follows a link,
+  so a linked root is followed once. A file input is one `WholeInput` job named by the
+  file name as given; the worker opens its canonical path (§ Jobs). A directory input is
+  `canonicalize`d once more, for link resolution below it, then listed.
+- Below a root every entry is `symlink_metadata`'d: directories are descended into,
+  regular files become jobs, and nothing else is opened. A link is
+  `NotChecked{Symlink(target)}`: the target kind is found by `read_link` and
+  `symlink_metadata` one path component at a time from the root's canonical path, so no
+  `stat` ever goes through a link, and more than 40 links is `Loop`. A FIFO, socket or
+  device is `SpecialFile(kind)`; on Windows every entry with
+  `FILE_ATTRIBUTE_REPARSE_POINT` (junction, mount point, symlink, cloud placeholder) is
+  `SpecialFile(ReparsePoint)` and is not descended into.
+- A directory is listed whole or not at all. One below the root whose listing fails, at
+  the start or part-way, is one `NotChecked{Unreadable(kind)}` at its own path, and none of
+  its entries is kept. An entry whose name is not a `RelPath` is left out, and its
+  directory gets one `NotChecked{UnsafeEntryName}` at its own path. At the root, which has
+  no path, both are a typed `WalkError` (`Input` with the I/O kind, or `EntryName`).
+- Walk-level outcomes have `file_kind: None`, the walk's location and key
+  `at(index, path, [])`. Each input's entries sort by `RelPath` bytes, so the walk order is
+  canonical order.
+- `TotalEntries` counts walked entries in canonical order. Leaf files are one entry each
+  and their count is known from the walk, so the cut is the walk's canonical prefix: the
+  rest is never dispatched, and becomes one `Aggregate{LimitExceeded(TotalEntries),
+  count: Some(n), at_least: n}` per input and `FileKind`, at the first covered file's key
+  and location. A cut file's kind is the router's by name (a listed extension is
+  `Source`, anything else `None`); a cut walk-level outcome's is `None`.
+  `TotalDecompressedBytes` has no producer until the container readers (Epic 3).
+- The definitions phase runs every definitions job of the run before any source job, which
+  meets the per-tree barrier for every tree at once. Each worker of the source phase gets
+  `Settings` and then every non-empty table's `Macros` frames before its first job, a
+  replacement worker included.
+- `RunWatchdog` runs from the start of the run and is checked before each job, before each
+  spawn, while waiting on a worker, and after each phase (compile database, definitions,
+  source). When it passes, every worker is killed and nothing more is dispatched. Committed
+  outcomes stand, a killed job's committed entries included. The rest of every source job
+  (from the next entry `faulting_entry` gives, or `[]`) becomes one host-dependent
+  `Aggregate{LimitExceeded(RunWatchdog)}` per input and by-name `FileKind`, at its first
+  covered key. A run watchdog during the compile-database job is the run watchdog, never a
+  `CompileDatabase` error.
+- Faults inside a job follow § Faults and resume: the collector keeps each entry's facts,
+  regions and notes until its `EntryDone` (or `JobDone{Some}` for `[]`), and attributes a
+  fault with `faulting_entry` and `fault_scope`. A watchdog or OS-cap end retries the whole
+  job once, and marks every outcome of the job host-dependent (S-A10 stays open for
+  containers).
+- Until the container readers (Epic 3), the collector refuses as `Fault(BadFrame)` a
+  `Route` job's `JobDone{None}`, a `JobDone{Some}` while an entry other than `[]` is still
+  open, and a job that ends with no outcome of its own. It also refuses an `Opened` for an
+  entry that is not below every open entry still waiting for its `EntryDone`, `Facts`,
+  `Regions` or `Notes` for any entry but the innermost open one, an `EntryDone` for an
+  entry that is not the innermost open one, and an ending `Aggregate` for an entry already
+  committed or skipped by `resume_after`.
+- Startup: a worker that dies before it sent anything is a failed spawn only when it exits
+  with `STARTUP_PROTOCOL_EXIT`; `STARTUP_CAP_EXIT` is the typed cap error; any other death
+  then is the job's fault, since the router reads the file before its first message. A
+  worker whose output ends while it still runs is given 2 seconds to exit, then killed, and
+  the job's fault is `Exited`.
 
 ### Entry numbering and commit
 
@@ -649,6 +746,10 @@ are:
 - Reasons are a closed enum with no free text; a reason that names a limit, a fault, a
   special file type or a link target carries that closed value. `Details` holds typed
   measurements only.
+- `Unreadable(IoKind)` is an I/O failure on a file or directory the walk listed: `NotFound`
+  (it vanished), `PermissionDenied`, `IsADirectory` (it became one) or `Other`. It replaced
+  Story 1.4's `NoReader` stand-in (U19); `NoReader` means only that no reader claims the
+  file.
 - `verdict_counts` gives the verdict-line counts: files read are the `Read` outcomes; files
   not checked are the `NotChecked` outcomes plus each `Aggregate`'s count. An `Aggregate`
   with no count adds `at_least`, never below 1, and makes the total `AtLeast`.
@@ -805,10 +906,10 @@ are:
 - `LIMITS` is the one limits table: names from FR-38, with its memory limit and watchdog
   each split in two (below), plus `EntryFacts`, `EntryMessageBytes`, `MacroTableBytes` (a
   `RunWide` limit on the merged macro tables, § Macro definitions) and `SyntaxDepth`
-  (`syntax-depth`, per file: the deepest syntax tree the C/C++ reader accepts, provisional
-  default 10,000 levels; Story 1.5), each with its flag name, scope, unit and default. The
-  defaults are provisional until the readers measure them; Story 1.6 sets them,
-  `MacroTableBytes` included.
+  (`syntax-depth`, per file: the deepest syntax tree the C/C++ reader accepts; Story 1.5),
+  each with its flag name, scope, unit and default. Story 1.6 set the defaults from
+  measurements on the seven spike code bases, recorded in `LIMITS.md`; they are frozen,
+  and none changes before Story 5.2 without an operator decision.
 - `Memory` is the per-file buffer the readers count through `WorkBudget`; it is
   deterministic. `WorkerMemoryCap` is the OS cap each worker sets on itself before its
   first job (Job Object or `setrlimit`), a last resort whose hit is host-dependent.
@@ -820,7 +921,7 @@ are:
   `set` checks only the one value; the bin calls `validate` after merging, and
   deserialization calls it too. A failure is `LimitError::CapBelowMemory`. The same check
   refuses a `MacroTableBytes` above `WorkerMemoryCap` (`LimitError::TableAboveCap`), since
-  every worker holds the tables; Story 1.6 sets the default.
+  every worker holds the tables.
 - Every limit is at least 1. `Limits::set`, `Limits::with` and deserialization refuse 0
   with `LimitError::Zero`, and deserialization refuses unknown fields. `Limits` is read
   through `get`; its fields are private. `EntryMessageBytes` is at most `u32::MAX`, the

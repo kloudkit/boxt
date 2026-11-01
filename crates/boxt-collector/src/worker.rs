@@ -1,4 +1,4 @@
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitCode;
 
@@ -6,15 +6,19 @@ use boxt_core::fact::{Fact, FileKind};
 use boxt_core::limits::{LimitName, Limits};
 use boxt_core::location::{Location, Scope};
 use boxt_core::message::{
-    CollectorMsg, EntryBudget, EntryPath, FrameError, Job, JobKind, Note, Region, WorkerMsg,
-    decode_frame, encode_frame,
+    CollectorMsg, EntryBudget, EntryPath, FRAME_PREFIX_LEN, FrameError, Job, JobFile, JobKind,
+    MacroDef, MacroTables, Note, Region, WorkerMsg, decode_frame, encode_definitions, encode_frame,
 };
-use boxt_core::outcome::{Details, FaultKind, FileOutcome, NotCheckedReason, Outcome, line_count};
-use boxt_core::read::{Exceeded, FactSink, NotRead, ReadCtx, Reader};
-use boxt_core::settings::WorkerSettings;
-use boxt_read_cpp::{CppReader, Grammar};
+use boxt_core::outcome::{
+    Details, FaultKind, FileOutcome, IoKind, NotCheckedReason, Outcome, line_count,
+};
+use boxt_core::read::{Exceeded, FactSink, NotRead, ReadCtx, Reader, WorkBudget};
+use boxt_core::settings::{Encoding, WorkerSettings};
+use boxt_read_cpp::CppReader;
 
 use crate::path::{declared_for, job_path, text_from_path};
+pub use crate::router::file_kind_by_name;
+use crate::router::{ByName, Fetched, Routed, by_name, fetch, route_content};
 use crate::{alloc, os};
 
 pub const WORKER_SUBCOMMAND: &str = "worker";
@@ -67,6 +71,7 @@ pub fn run() -> ExitCode {
     }
 
     let max_len = settings.limits.get(LimitName::EntryMessageBytes);
+    let mut tables = MacroTables::new();
     loop {
         let msg = match decode_frame::<CollectorMsg, _>(&mut input, max_len) {
             Ok(Some(decoded)) => decoded.msg,
@@ -78,7 +83,7 @@ pub fn run() -> ExitCode {
         };
         match msg {
             CollectorMsg::Job(job) => {
-                if run_job(&job, &settings, &mut output).is_err() {
+                if run_job(&job, &settings, &tables, &mut output).is_err() {
                     return ExitCode::SUCCESS;
                 }
             }
@@ -86,7 +91,16 @@ pub fn run() -> ExitCode {
                 eprintln!("boxt worker: a second settings message");
                 return ExitCode::from(STARTUP_PROTOCOL_EXIT as u8);
             }
-            CollectorMsg::Macros { .. } => {}
+            CollectorMsg::Macros {
+                tree,
+                definitions,
+                end,
+            } => {
+                if let Err(e) = tables.receive(tree, definitions, end) {
+                    eprintln!("boxt worker: {e}");
+                    return ExitCode::from(STARTUP_PROTOCOL_EXIT as u8);
+                }
+            }
         }
     }
 }
@@ -104,22 +118,17 @@ fn send(out: &mut impl Write, msg: &WorkerMsg, max_len: u64) -> io::Result<()> {
     out.write_all(&frame)
 }
 
-fn run_job(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Result<()> {
+pub fn run_job(
+    job: &Job,
+    settings: &WorkerSettings,
+    tables: &MacroTables,
+    out: &mut impl Write,
+) -> io::Result<()> {
     let max_len = settings.limits.get(LimitName::EntryMessageBytes);
-    let outcome = if job.kind == JobKind::Route {
-        let routed = catch_unwind(AssertUnwindSafe(|| route(job, settings, out)));
-        match routed {
-            Ok(result) => result?,
-            Err(_) => Outcome::new(
-                FileOutcome::NotChecked {
-                    reason: NotCheckedReason::Fault(FaultKind::Panic),
-                    details: Details::None,
-                },
-                file_kind_by_name(job),
-            ),
-        }
-    } else {
-        not_checked(NotCheckedReason::NoReader, None)
+    let outcome = match job.kind {
+        JobKind::Route => route(job, settings, tables, out)?,
+        JobKind::Definitions => definitions(job, settings, out)?,
+        JobKind::CompileDatabase => not_checked(NotCheckedReason::NoReader, None),
     };
     send(
         out,
@@ -129,11 +138,6 @@ fn run_job(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Re
         max_len,
     )?;
     out.flush()
-}
-
-pub fn file_kind_by_name(job: &Job) -> Option<FileKind> {
-    let path = job.path()?;
-    Grammar::for_file_name(path.file_name()).map(|_| FileKind::Source)
 }
 
 fn not_checked(reason: NotCheckedReason, file_kind: Option<FileKind>) -> Outcome {
@@ -146,19 +150,121 @@ fn not_checked(reason: NotCheckedReason, file_kind: Option<FileKind>) -> Outcome
     )
 }
 
-fn route(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Result<Outcome> {
+fn panicked(file_kind: Option<FileKind>, lines: Option<u64>) -> Outcome {
+    let outcome = not_checked(NotCheckedReason::Fault(FaultKind::Panic), file_kind);
+    match lines {
+        Some(lines) => outcome.with_lines(lines),
+        None => outcome,
+    }
+}
+
+struct Loaded {
+    name: ByName,
+    bytes: Vec<u8>,
+    encoding: Option<Encoding>,
+    location: Location,
+    lines: u64,
+}
+
+enum Prepared {
+    Done(Outcome),
+    Cxx(Box<(Loaded, WorkBudget)>),
+}
+
+fn job_file_on_disk(job: &Job) -> Option<std::path::PathBuf> {
+    let path = job_path(job)?;
+    match job.file {
+        JobFile::WholeInput(_) => std::fs::canonicalize(&path).ok(),
+        _ => Some(path),
+    }
+}
+
+fn load(job: &Job, settings: &WorkerSettings) -> Result<Loaded, Outcome> {
+    let Some(path) = job.path().cloned() else {
+        return Err(not_checked(NotCheckedReason::NoReader, None));
+    };
+    let name = by_name(path.file_name());
+    if name == ByName::Other {
+        return Err(not_checked(NotCheckedReason::NoReader, None));
+    }
+    let kind_by_name = file_kind_by_name(job);
+    let Some(on_disk) = job_file_on_disk(job) else {
+        return Err(not_checked(
+            NotCheckedReason::Unreadable(IoKind::NotFound),
+            kind_by_name,
+        ));
+    };
+    let max_size = settings.limits.get(LimitName::FileSize);
+    let bytes = match fetch(&on_disk, max_size, kind_by_name) {
+        Fetched::Bytes(bytes) => bytes,
+        Fetched::NotChecked(file, kind) => return Err(Outcome::new(file, kind)),
+    };
+    let on_disk_text = text_from_path(&on_disk);
+    let encoding = settings.resolve_encoding(|p| declared_for(p, &on_disk_text));
+    let lines = line_count(&bytes, encoding);
+    Ok(Loaded {
+        name,
+        bytes,
+        encoding,
+        location: Location::file(job.input.clone(), Vec::new(), path),
+        lines,
+    })
+}
+
+fn identify(loaded: Loaded, settings: &WorkerSettings) -> Prepared {
+    let mut ctx = ReadCtx::new(loaded.location.clone(), &settings.limits, loaded.encoding);
+    let routed = route_content(&loaded.bytes, &mut ctx, loaded.name);
+    let lines = loaded.lines;
+    match routed {
+        Routed::Cxx => Prepared::Cxx(Box::new((loaded, ctx.into_budget()))),
+        Routed::NoReader => {
+            Prepared::Done(not_checked(NotCheckedReason::NoReader, None).with_lines(lines))
+        }
+        Routed::NotRead(not_read, kind) => {
+            Prepared::Done(Outcome::new(not_read.outcome(), kind).with_lines(lines))
+        }
+    }
+}
+
+fn prepare(job: &Job, settings: &WorkerSettings) -> Prepared {
+    let loaded = match load(job, settings) {
+        Ok(loaded) => loaded,
+        Err(outcome) => return Prepared::Done(outcome),
+    };
+    let lines = loaded.lines;
+    let kind = if loaded.name == ByName::Listed {
+        Some(FileKind::Source)
+    } else {
+        None
+    };
+    catch_unwind(AssertUnwindSafe(|| identify(loaded, settings)))
+        .unwrap_or_else(|_| Prepared::Done(panicked(kind, Some(lines))))
+}
+
+fn route(
+    job: &Job,
+    settings: &WorkerSettings,
+    tables: &MacroTables,
+    out: &mut impl Write,
+) -> io::Result<Outcome> {
     let max_len = settings.limits.get(LimitName::EntryMessageBytes);
-    let path = job.path().cloned();
-    let grammar = path
-        .as_ref()
-        .and_then(|p| Grammar::for_file_name(p.file_name()));
-    let file_kind = grammar.map(|_| FileKind::Source);
+
+    #[cfg(feature = "fault-fixtures")]
+    if let Some(name) = job.path().map(|p| p.file_name()) {
+        fixtures::trigger_early(name, job, out, max_len);
+    }
+
+    let prepared = prepare(job, settings);
+    let file_kind = match &prepared {
+        Prepared::Done(outcome) => outcome.file_kind,
+        Prepared::Cxx(..) => Some(FileKind::Source),
+    };
     send(
         out,
         &WorkerMsg::Opened {
             entry: EntryPath::job(),
             frames: Vec::new(),
-            path: path.clone(),
+            path: job.path().cloned(),
             scope: Scope::File,
             file_kind,
         },
@@ -166,53 +272,107 @@ fn route(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Resu
     )?;
 
     #[cfg(feature = "fault-fixtures")]
-    if let Some(name) = path.as_ref().map(|p| p.file_name()) {
+    if let Some(name) = job.path().map(|p| p.file_name()) {
         out.flush()?;
-        fixtures::trigger(name, out, max_len);
+        if catch_unwind(AssertUnwindSafe(|| fixtures::trigger(name, out, max_len))).is_err() {
+            let lines = match &prepared {
+                Prepared::Done(outcome) => outcome.lines.map(|l| l.lines),
+                Prepared::Cxx(ready) => Some(ready.0.lines),
+            };
+            return Ok(panicked(file_kind, lines));
+        }
     }
 
-    if grammar.is_none() {
-        return Ok(not_checked(NotCheckedReason::NoReader, None));
-    }
-    let Some(path) = path else {
-        return Ok(not_checked(NotCheckedReason::NoReader, file_kind));
+    let (loaded, budget) = match prepared {
+        Prepared::Done(outcome) => return Ok(outcome),
+        Prepared::Cxx(ready) => *ready,
     };
-    let Some(on_disk) = job_path(job) else {
-        return Ok(not_checked(NotCheckedReason::NoReader, file_kind));
-    };
-    let max_size = settings.limits.get(LimitName::FileSize);
-    let bytes = match read_bounded(&on_disk, max_size) {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(size)) => {
-            return Ok(Outcome::new(
-                FileOutcome::NotChecked {
-                    reason: NotCheckedReason::LimitExceeded(LimitName::FileSize),
-                    details: Details::Measured {
-                        value: size,
-                        limit: max_size,
-                    },
-                },
-                file_kind,
-            ));
+    let lines = loaded.lines;
+    let read = catch_unwind(AssertUnwindSafe(|| {
+        let ctx = ReadCtx::with_budget(loaded.location, loaded.encoding, budget);
+        let mut ctx = match tables.for_tree(job.input.index) {
+            Some(table) => ctx.with_macros(table),
+            None => ctx,
+        };
+        let mut sink = FrameSink::new(&mut *out, &settings.limits);
+        let read = CppReader.read(&loaded.bytes, &mut ctx, &mut sink);
+        let read = read.and_then(|()| sink.flush().map_err(NotRead::from));
+        match sink.failed.take() {
+            Some(error) => Err(error),
+            None => Ok(read),
         }
-        Err(_) => return Ok(not_checked(NotCheckedReason::NoReader, file_kind)),
-    };
-    let on_disk_text = text_from_path(&on_disk);
-    let encoding = settings.resolve_encoding(|p| declared_for(p, &on_disk_text));
-    let lines = line_count(&bytes, encoding);
-    let location = Location::file(job.input.clone(), Vec::new(), path);
-    let mut ctx = ReadCtx::new(location, &settings.limits, encoding);
-    let mut sink = FrameSink::new(out, &settings.limits);
-    let read = CppReader.read(&bytes, &mut ctx, &mut sink);
-    let read = read.and_then(|()| sink.flush().map_err(NotRead::from));
-    if let Some(error) = sink.failed.take() {
-        return Err(error);
-    }
+    }));
     let file = match read {
-        Ok(()) => FileOutcome::Read,
-        Err(not_read) => not_read.outcome(),
+        Ok(Ok(Ok(()))) => FileOutcome::Read,
+        Ok(Ok(Err(not_read))) => not_read.outcome(),
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Ok(panicked(file_kind, Some(lines))),
     };
     Ok(Outcome::new(file, file_kind).with_lines(lines))
+}
+
+fn definitions(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Result<Outcome> {
+    let max_len = settings.limits.get(LimitName::EntryMessageBytes);
+
+    #[cfg(feature = "fault-fixtures")]
+    if let Some(name) = job.path().map(|p| p.file_name()) {
+        fixtures::trigger_definitions(name);
+    }
+
+    let loaded = match prepare(job, settings) {
+        Prepared::Done(outcome) => return Ok(outcome),
+        Prepared::Cxx(ready) => ready.0,
+    };
+    let lines = loaded.lines;
+    let read = |file| Outcome::new(file, Some(FileKind::Source)).with_lines(lines);
+    let found = catch_unwind(AssertUnwindSafe(|| {
+        boxt_read_cpp::definitions(&loaded.bytes, loaded.encoding, &loaded.location)
+    }));
+    let defs = match found {
+        Ok(Ok(defs)) => defs,
+        Ok(Err(reason)) => {
+            return Ok(read(FileOutcome::NotChecked {
+                reason,
+                details: Details::None,
+            }));
+        }
+        Err(_) => return Ok(panicked(Some(FileKind::Source), Some(lines))),
+    };
+    let total = defs.len();
+    let valid: Vec<MacroDef> = defs
+        .into_iter()
+        .filter(|def| def.validate(job, max_len).is_ok())
+        .collect();
+    let dropped = (total - valid.len()) as u64;
+    let mut entry = EntryBudget::new(&settings.limits);
+    let mut frames = if valid.is_empty() {
+        Vec::new()
+    } else {
+        encode_definitions(&valid, max_len).map_err(io::Error::other)?
+    };
+    let charge = WorkerMsg::Definitions {
+        definitions: Vec::new(),
+    };
+    let mut charges: Vec<WorkerMsg> = vec![charge; frames.len()];
+    if dropped > 0 {
+        let note = WorkerMsg::Notes {
+            entry: EntryPath::job(),
+            notes: vec![Note::DroppedDefinitions(dropped)],
+        };
+        frames.push(encode_frame(&note, max_len).map_err(io::Error::other)?);
+        charges.push(note);
+    }
+    for (frame, msg) in frames.iter().zip(&charges) {
+        let payload_len = frame.len().saturating_sub(FRAME_PREFIX_LEN) as u64;
+        if entry.charge_frame(msg, payload_len).is_err() {
+            break;
+        }
+        out.write_all(frame)?;
+    }
+    if let Some(exceeded) = entry.exceeded_outcome() {
+        return Ok(read(exceeded));
+    }
+    Ok(read(FileOutcome::Read))
 }
 
 const FACTS_PER_FRAME: usize = 1024;
@@ -330,20 +490,6 @@ impl<W: Write> FactSink for FrameSink<'_, W> {
     }
 }
 
-fn read_bounded(path: &std::path::Path, max: u64) -> io::Result<Result<Vec<u8>, u64>> {
-    let file = std::fs::File::open(path)?;
-    let size = file.metadata()?.len();
-    if size > max {
-        return Ok(Err(size));
-    }
-    let mut bytes = Vec::new();
-    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max {
-        return Ok(Err(size.max(bytes.len() as u64)));
-    }
-    Ok(Ok(bytes))
-}
-
 #[cfg(feature = "fault-fixtures")]
 mod fixtures {
     #[cfg(not(debug_assertions))]
@@ -352,7 +498,9 @@ mod fixtures {
     use std::hint::black_box;
     use std::io::Write;
 
-    use boxt_core::message::{WorkerMsg, encode_frame};
+    use boxt_core::location::Scope;
+    use boxt_core::message::{EntryPath, Job, WorkerMsg, encode_frame};
+    use boxt_core::outcome::{FileOutcome, Outcome};
 
     pub const PREFIX: &[u8] = b"boxt-fixture-";
 
@@ -378,6 +526,59 @@ mod fixtures {
             b"half-frame" => half_frame(out, max_len),
             _ => {}
         }
+    }
+
+    pub fn trigger_early(file_name: &[u8], job: &Job, out: &mut impl Write, max_len: u64) {
+        let Some(rest) = file_name.strip_prefix(PREFIX) else {
+            return;
+        };
+        let stem = rest.split(|&b| b == b'.').next().unwrap_or(rest);
+        match stem {
+            b"early-segfault" => segfault(),
+            b"container-crash" => container_crash(job, out, max_len),
+            _ => {}
+        }
+    }
+
+    pub fn trigger_definitions(file_name: &[u8]) {
+        let Some(rest) = file_name.strip_prefix(PREFIX) else {
+            return;
+        };
+        let stem = rest.split(|&b| b == b'.').next().unwrap_or(rest);
+        if stem == b"defs-spin" {
+            loop {
+                std::hint::spin_loop();
+            }
+        }
+    }
+
+    fn container_crash(job: &Job, out: &mut impl Write, max_len: u64) {
+        let opened = |entry: EntryPath| WorkerMsg::Opened {
+            entry,
+            frames: Vec::new(),
+            path: job.path().cloned(),
+            scope: Scope::File,
+            file_kind: None,
+        };
+        let mut msgs = Vec::new();
+        if job.resume_after.is_none() {
+            msgs.push(opened(EntryPath::job()));
+            msgs.push(opened(EntryPath::from([0])));
+            msgs.push(WorkerMsg::EntryDone {
+                entry: EntryPath::from([0]),
+                outcome: Outcome::new(FileOutcome::Read, None),
+                bytes: 0,
+            });
+            msgs.push(opened(EntryPath::from([1])));
+        } else {
+            msgs.push(opened(EntryPath::from([2])));
+        }
+        for msg in msgs {
+            let frame = encode_frame(&msg, max_len).expect("a small frame encodes");
+            let _ = out.write_all(&frame);
+        }
+        let _ = out.flush();
+        segfault();
     }
 
     fn record_pid() {
@@ -490,6 +691,7 @@ mod tests {
         run_job(
             &job(&root, "a.c"),
             &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
             &mut out,
         )
         .unwrap();
@@ -523,6 +725,7 @@ mod tests {
         run_job(
             &job(&root, "a.c"),
             &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
             &mut out,
         )
         .unwrap();
@@ -547,6 +750,7 @@ mod tests {
         run_job(
             &job(&root, "a.c"),
             &settings(Limits::default(), vec![decl]),
+            &MacroTables::new(),
             &mut out,
         )
         .unwrap();
@@ -565,7 +769,13 @@ mod tests {
         let root = dir("facts", &[("a.c", SOURCE)]);
         let limits = Limits::default().with(LimitName::EntryFacts, 2).unwrap();
         let mut out = Vec::new();
-        run_job(&job(&root, "a.c"), &settings(limits, Vec::new()), &mut out).unwrap();
+        run_job(
+            &job(&root, "a.c"),
+            &settings(limits, Vec::new()),
+            &MacroTables::new(),
+            &mut out,
+        )
+        .unwrap();
         let done = outcome(&messages(&out));
         assert!(matches!(
             done.file,
@@ -589,6 +799,7 @@ mod tests {
         run_job(
             &job(&root, "a.c"),
             &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
             &mut out,
         )
         .unwrap();
@@ -660,6 +871,137 @@ mod tests {
         assert!(over.value > 1024);
         assert!(sink.failed.is_none());
         assert!(out.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_for_a_fifo_is_reported_from_the_handle() {
+        let root = dir("swapped", &[]);
+        rustix::fs::mkfifoat(rustix::fs::CWD, root.0.join("a.c"), rustix::fs::Mode::RUSR).unwrap();
+        let mut out = Vec::new();
+        run_job(
+            &job(&root, "a.c"),
+            &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
+            &mut out,
+        )
+        .unwrap();
+        let msgs = messages(&out);
+        let done = outcome(&msgs);
+        assert_eq!(
+            done.file,
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::SpecialFile(boxt_core::outcome::SpecialKind::Fifo),
+                details: Details::None
+            }
+        );
+        assert_eq!(done.file_kind, None);
+        assert!(matches!(
+            &msgs[0],
+            WorkerMsg::Opened {
+                file_kind: None,
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_in_is_never_followed() {
+        let root = dir("swapped-link", &[("real.c", SOURCE)]);
+        std::os::unix::fs::symlink("real.c", root.0.join("a.c")).unwrap();
+        let mut out = Vec::new();
+        run_job(
+            &job(&root, "a.c"),
+            &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
+            &mut out,
+        )
+        .unwrap();
+        let msgs = messages(&out);
+        assert!(msgs.iter().all(|m| !matches!(m, WorkerMsg::Facts { .. })));
+        assert_eq!(
+            outcome(&msgs).file,
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::Symlink(boxt_core::outcome::LinkTarget::Unresolved),
+                details: Details::None
+            }
+        );
+    }
+
+    #[test]
+    fn a_vanished_file_is_unreadable() {
+        let root = dir("vanished", &[]);
+        let mut out = Vec::new();
+        run_job(
+            &job(&root, "gone.c"),
+            &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
+            &mut out,
+        )
+        .unwrap();
+        let done = outcome(&messages(&out));
+        assert_eq!(
+            done.file,
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::Unreadable(IoKind::NotFound),
+                details: Details::None
+            }
+        );
+        assert_eq!(done.file_kind, Some(FileKind::Source));
+    }
+
+    #[test]
+    fn a_definitions_job_sends_its_defines_then_its_outcome() {
+        let header =
+            b"#define A 1\n#define F(x, ...) g(x, __VA_ARGS__)\n#if 0\n#define A 2\n#endif\n";
+        let root = dir("defs", &[("a.h", header), ("README", b"text\n")]);
+        let defs_job = |file: &str| Job {
+            kind: JobKind::Definitions,
+            ..job(&root, file)
+        };
+        let mut out = Vec::new();
+        run_job(
+            &defs_job("a.h"),
+            &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
+            &mut out,
+        )
+        .unwrap();
+        let msgs = messages(&out);
+        assert!(msgs.iter().all(|m| m.allowed_in(JobKind::Definitions)));
+        let defs: Vec<&MacroDef> = msgs
+            .iter()
+            .filter_map(|m| match m {
+                WorkerMsg::Definitions { definitions } => Some(definitions),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(defs.len(), 3);
+        assert!(
+            defs.iter()
+                .all(|d| d.validate(&defs_job("a.h"), u64::MAX).is_ok())
+        );
+        assert_eq!(outcome(&msgs).file, FileOutcome::Read);
+
+        let mut out = Vec::new();
+        run_job(
+            &defs_job("README"),
+            &settings(Limits::default(), Vec::new()),
+            &MacroTables::new(),
+            &mut out,
+        )
+        .unwrap();
+        let msgs = messages(&out);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            outcome(&msgs).file,
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::NoReader,
+                details: Details::None
+            }
+        );
     }
 
     struct Broken;

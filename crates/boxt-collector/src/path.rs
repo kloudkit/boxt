@@ -25,7 +25,10 @@ pub fn path_from_text(text: &Text) -> Option<PathBuf> {
 
 #[cfg(windows)]
 pub fn path_from_text(text: &Text) -> Option<PathBuf> {
-    text.as_str().map(PathBuf::from)
+    use std::os::windows::ffi::OsStringExt;
+    Some(PathBuf::from(std::ffi::OsString::from_wide(
+        &text.to_wide()?,
+    )))
 }
 
 pub fn rel_path(root: &Path, file: &Path) -> Option<RelPath> {

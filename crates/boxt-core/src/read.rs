@@ -84,6 +84,8 @@ pub struct WorkBudget {
     work: u64,
     bytes: u64,
     depth: u64,
+    peak_bytes: u64,
+    deepest_syntax: Cell<u64>,
     job: Rc<JobCounters>,
 }
 
@@ -171,6 +173,8 @@ impl WorkBudget {
             work: 0,
             bytes: 0,
             depth: 0,
+            peak_bytes: 0,
+            deepest_syntax: Cell::new(0),
             job: Rc::new(JobCounters {
                 max_entries: limits.get(LimitName::TotalEntries),
                 max_decompressed: limits.get(LimitName::TotalDecompressedBytes),
@@ -188,6 +192,8 @@ impl WorkBudget {
         WorkBudget {
             work: 0,
             bytes: 0,
+            peak_bytes: 0,
+            deepest_syntax: Cell::new(0),
             job: Rc::clone(&self.job),
             ..*self
         }
@@ -235,6 +241,8 @@ impl WorkBudget {
     }
 
     pub fn syntax_depth(&self, depth: u64) -> Result<(), Exceeded> {
+        self.deepest_syntax
+            .set(self.deepest_syntax.get().max(depth));
         if depth > self.max_syntax_depth {
             return Err(Exceeded {
                 limit: LimitName::SyntaxDepth,
@@ -246,7 +254,9 @@ impl WorkBudget {
     }
 
     pub fn buffer(&mut self, bytes: u64) -> Result<(), Exceeded> {
-        charge(LimitName::Memory, &mut self.bytes, bytes, self.max_bytes)
+        let charged = charge(LimitName::Memory, &mut self.bytes, bytes, self.max_bytes);
+        self.peak_bytes = self.peak_bytes.max(self.bytes);
+        charged
     }
 
     pub fn release(&mut self, bytes: u64) {
@@ -260,6 +270,8 @@ impl WorkBudget {
             work: 0,
             bytes: 0,
             depth,
+            peak_bytes: 0,
+            deepest_syntax: Cell::new(0),
             job: Rc::clone(&self.job),
             ..*self
         })
@@ -275,6 +287,14 @@ impl WorkBudget {
 
     pub fn buffered(&self) -> u64 {
         self.bytes
+    }
+
+    pub fn peak_buffered(&self) -> u64 {
+        self.peak_bytes
+    }
+
+    pub fn deepest_syntax(&self) -> u64 {
+        self.deepest_syntax.get()
     }
 }
 

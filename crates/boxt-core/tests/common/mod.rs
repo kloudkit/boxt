@@ -14,8 +14,8 @@ use boxt_core::message::{
     MacroParams, MacroTable, Note, Region, RegionReason, Variadic, WorkerMsg,
 };
 use boxt_core::outcome::{
-    Details, FaultKind, FileOutcome, LineCount, LinkTarget, NotCheckedReason, OutOfScopeCause,
-    Outcome, OwnFileRole, SpecialKind,
+    Details, FaultKind, FileOutcome, IoKind, LineCount, LinkTarget, NotCheckedReason,
+    OutOfScopeCause, Outcome, OwnFileRole, SpecialKind,
 };
 use boxt_core::settings::{Encoding, EncodingDecl, PathPattern, WorkerSettings};
 use boxt_core::shell::{Assignment, RedirectOp, Redirection};
@@ -283,6 +283,7 @@ pub fn all_reasons() -> Vec<NotCheckedReason> {
         NotCheckedReason::SpecialFile(SpecialKind::Fifo),
         NotCheckedReason::Symlink(LinkTarget::Special(SpecialKind::Socket)),
         NotCheckedReason::Symlink(LinkTarget::Unresolved),
+        NotCheckedReason::Unreadable(IoKind::PermissionDenied),
         NotCheckedReason::UnsafeEntryName,
         NotCheckedReason::NotInCompileDatabase,
     ];
@@ -308,6 +309,7 @@ pub fn all_reasons() -> Vec<NotCheckedReason> {
             | NotCheckedReason::RepeatedFault
             | NotCheckedReason::SpecialFile(_)
             | NotCheckedReason::Symlink(_)
+            | NotCheckedReason::Unreadable(_)
             | NotCheckedReason::UnsafeEntryName
             | NotCheckedReason::NotInCompileDatabase => {}
         }

@@ -821,6 +821,72 @@ impl Reader for CppReader {
     }
 }
 
+const READABLE_SHARE_PERCENT: u64 = 90;
+
+fn has_function(tree: &Tree) -> bool {
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "function_definition" && !node.has_error() {
+            return true;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    false
+}
+
+fn readable_share_met(tree: &Tree, nl: u32) -> bool {
+    let mut bad = vec![false; nl as usize + 2];
+    let (error, missing) = passes::bad_ranges(tree);
+    for r in error.iter().chain(missing.iter()) {
+        passes::mark(&mut bad, *r, nl);
+    }
+    let unreadable = count(&bad) as u64;
+    let readable = u64::from(nl).saturating_sub(unreadable);
+    readable.saturating_mul(100) >= u64::from(nl).saturating_mul(READABLE_SHARE_PERCENT)
+}
+
+/// The router's content check. `listed` is whether the file name has a listed C/C++
+/// extension: such a file is C/C++ unless its decoded text holds a NUL, and one that fails
+/// decoding is `Err` with the FR-10 reason. An extensionless file needs most lines readable
+/// in one parse and a function definition, `#include` or `#define`.
+pub fn identify(bytes: &[u8], ctx: &mut ReadCtx<'_>, listed: bool) -> Result<bool, NotRead> {
+    let decoded = match decode(bytes, ctx.encoding) {
+        Ok(decoded) => decoded,
+        Err(reason) if listed => return Err(NotRead::new(reason)),
+        Err(_) => return Ok(false),
+    };
+    if decoded.text.contains('\0') {
+        return Ok(false);
+    }
+    if listed {
+        return Ok(true);
+    }
+    let text = working_text(decoded.text);
+    let file_name = ctx.location.path.as_ref().map(|p| p.file_name().to_vec());
+    let grammars = Grammar::tried_for(file_name.as_deref());
+    let lx = lex::lex(&text, grammars[0] == Grammar::Cpp);
+    let mut eng = Engine {
+        ctx,
+        parsers: Vec::new(),
+    };
+    let nl = lex::line_count(&text);
+    if nl == 0 {
+        return Ok(false);
+    }
+    let directive = lx
+        .dirs
+        .iter()
+        .any(|d| matches!(d.kind, Kind::Include | Kind::Define));
+    for &g in grammars {
+        let tree = eng.parse(g, &text).map_err(NotRead::from)?;
+        if readable_share_met(&tree, nl) && (directive || has_function(&tree)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn definitions(
     bytes: &[u8],
     declared: Option<Encoding>,

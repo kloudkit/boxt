@@ -287,6 +287,7 @@ pub enum NotCheckedReason {
     RepeatedFault,
     SpecialFile(SpecialKind),
     Symlink(LinkTarget),
+    Unreadable(IoKind),
     UnsafeEntryName,
     NotInCompileDatabase,
 }
@@ -309,6 +310,26 @@ pub enum SpecialKind {
     CharDevice,
     ReparsePoint,
     Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoKind {
+    NotFound,
+    PermissionDenied,
+    IsADirectory,
+    Other,
+}
+
+impl IoKind {
+    pub fn from_io(kind: std::io::ErrorKind) -> IoKind {
+        match kind {
+            std::io::ErrorKind::NotFound => IoKind::NotFound,
+            std::io::ErrorKind::PermissionDenied => IoKind::PermissionDenied,
+            std::io::ErrorKind::IsADirectory => IoKind::IsADirectory,
+            _ => IoKind::Other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

@@ -64,3 +64,34 @@ fn the_boxt_binary_exits_on_its_memory_cap() {
     assert!(fixture.outcome.host_dependent);
     assert_eq!(fixture.attempts, 2);
 }
+
+fn collect(args: &[&std::ffi::OsStr]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_boxt"))
+        .arg("collect")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn collect_prints_counts_and_exits_2_when_nothing_is_read() {
+    let dir = tree("collect", &["a.c", "b.cpp"]);
+    std::fs::write(dir.0.join("README"), b"text\n").unwrap();
+    let out = collect(&[dir.0.as_os_str()]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with("outcomes 3 read 2 not-checked 1 "),
+        "{text}"
+    );
+    let one = collect(&[dir.0.as_os_str(), "--jobs".as_ref(), "1".as_ref()]);
+    assert_eq!(String::from_utf8(one.stdout).unwrap(), text);
+
+    let empty = tree("collect-nothing", &[]);
+    std::fs::write(empty.0.join("README"), b"text\n").unwrap();
+    let out = collect(&[empty.0.as_os_str()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    let entries: Vec<_> = std::fs::read_dir(&empty.0).unwrap().collect();
+    assert_eq!(entries.len(), 1, "nothing was written into the input");
+}

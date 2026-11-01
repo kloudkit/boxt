@@ -47,6 +47,10 @@ fn main() -> ExitCode {
             a_source_with_facts_and_a_region_is_read,
         ),
         ("segfault_ends_only_its_file", segfault_ends_only_its_file),
+        (
+            "segfault_before_opened_ends_only_its_file",
+            segfault_before_opened_ends_only_its_file,
+        ),
         ("abort_ends_only_its_file", abort_ends_only_its_file),
         (
             "stack_overflow_ends_only_its_file",
@@ -287,6 +291,10 @@ fn crash_fixture(fixture: &str) {
     assert_eq!(report.spawns, 2, "the dead worker is replaced once");
 }
 
+fn segfault_before_opened_ends_only_its_file() {
+    crash_fixture("early-segfault");
+}
+
 fn segfault_ends_only_its_file() {
     crash_fixture("segfault");
 }
@@ -336,7 +344,7 @@ fn panic_is_caught_without_a_respawn() {
     let got = report_for(&report, &fixture_file("panic"));
     assert_eq!(
         got.outcome,
-        not_checked(NotCheckedReason::Fault(FaultKind::Panic), false)
+        not_checked(NotCheckedReason::Fault(FaultKind::Panic), false).with_lines(3)
     );
     assert_eq!(got.attempts, 1);
     assert_eq!(report.spawns, 1, "a caught panic keeps its worker");
@@ -409,11 +417,11 @@ fn mixed_faults_on_four_workers() {
     ];
     for (fixture, kind) in expect {
         let got = report_for(&report, &fixture_file(fixture));
-        assert_eq!(
-            got.outcome,
-            not_checked(NotCheckedReason::Fault(kind), false),
-            "{fixture}"
-        );
+        let mut expect = not_checked(NotCheckedReason::Fault(kind), false);
+        if kind == FaultKind::Panic {
+            expect = expect.with_lines(3);
+        }
+        assert_eq!(got.outcome, expect, "{fixture}");
         assert_eq!(got.attempts, 1, "{fixture}");
     }
 }

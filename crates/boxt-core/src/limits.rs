@@ -62,21 +62,21 @@ pub const LIMITS: &[LimitSpec] = &[
         flag: "file-size",
         scope: LimitScope::PerFile,
         unit: LimitUnit::Bytes,
-        default: 64 * MIB,
+        default: 16 * MIB,
     },
     LimitSpec {
         name: LimitName::Work,
         flag: "work",
         scope: LimitScope::PerFile,
         unit: LimitUnit::Steps,
-        default: 50_000_000,
+        default: 2_000_000,
     },
     LimitSpec {
         name: LimitName::Memory,
         flag: "memory",
         scope: LimitScope::PerFile,
         unit: LimitUnit::Bytes,
-        default: 256 * MIB,
+        default: 512 * MIB,
     },
     LimitSpec {
         name: LimitName::ArchiveDepth,
@@ -97,7 +97,7 @@ pub const LIMITS: &[LimitSpec] = &[
         flag: "total-entries",
         scope: LimitScope::RunWide,
         unit: LimitUnit::Entries,
-        default: 1_000_000,
+        default: 100_000,
     },
     LimitSpec {
         name: LimitName::TotalDecompressedBytes,
@@ -132,7 +132,7 @@ pub const LIMITS: &[LimitSpec] = &[
         flag: "entry-facts",
         scope: LimitScope::PerEntry,
         unit: LimitUnit::Facts,
-        default: 1_000_000,
+        default: 50_000,
     },
     LimitSpec {
         name: LimitName::EntryMessageBytes,
@@ -146,7 +146,7 @@ pub const LIMITS: &[LimitSpec] = &[
         flag: "macro-table-bytes",
         scope: LimitScope::RunWide,
         unit: LimitUnit::Bytes,
-        default: 64 * MIB,
+        default: 8 * MIB,
     },
     LimitSpec {
         name: LimitName::SyntaxDepth,
