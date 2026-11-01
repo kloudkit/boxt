@@ -28,6 +28,7 @@ pub mod decode;
 pub mod fact;
 pub mod identity;
 pub mod input_scope;
+pub mod labels;
 pub mod limits;
 pub mod location;
 pub mod message;

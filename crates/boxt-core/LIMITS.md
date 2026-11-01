@@ -13,13 +13,13 @@ public spike code bases, and froze them on 2026-11-01. No default changes before
   are C/C++ candidates by name (a listed extension, or no extension), and 8,914 of those
   are C/C++ after the router's content check.
 - **Commands** (release build, Linux x86_64 glibc, 12 cores, a shared host):
-  - `boxt collect <code base> --measure` runs the real pipeline. It prints the walked
+  - `boxt __collect <code base> --measure` runs the real pipeline. It prints the walked
     entries, the largest walked file, the longest job's wall time, the run's wall time, the
     largest worker RSS, the merged macro-table bytes, and the most facts one file sent.
     Its `cut-files` line counts the files (not outcomes: an aggregate counts its files)
     each limit cut, `TotalEntries` and `RunWatchdog` included, and the trees
     `MacroTableBytes` cut.
-  - `boxt measure <code base>` reads every candidate in one process exactly as the worker
+  - `boxt __measure <code base>` reads every candidate in one process exactly as the worker
     charges it: the content check and the read share one `WorkBudget`, with the tree's
     merged macro table attached. `FileSize`, `Work`, `Memory`, `SyntaxDepth`,
     `EntryFacts` and `MacroTableBytes` are raised to their maximum, so each file's own size,
@@ -69,7 +69,7 @@ plain, and `--jobs 1`) gave the same counts and digest, and wrote no file.
 
 The share cut is out of the 8,914 C/C++ files of the seven code bases, or their 17,765
 entries for a run-wide limit, with the default in place: `cut-files` from
-`boxt collect --measure` and `over-default` from `boxt measure`.
+`boxt __collect --measure` and `over-default` from `boxt __measure`.
 
 | Limit | Default | Measurement that set it | Share cut | Date |
 | --- | --- | --- | --- | --- |

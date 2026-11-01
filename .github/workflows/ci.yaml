@@ -109,5 +109,25 @@ jobs:
             exit 1
           fi
 
+      - name: 💥 Check a main-process panic in a release binary exits 2
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+        run: |
+          cargo build -p boxt --locked --release --target ${{ matrix.target }} --target-dir target/fixtures --features boxt/fault-fixtures
+          bin=target/fixtures/${{ matrix.target }}/release/boxt
+          if [ "$RUNNER_OS" = Windows ]; then bin=$bin.exe; fi
+          input=$RUNNER_TEMP/boxt-fixture-main-panic
+          mkdir -p "$input"
+          printf 'int f(void) { return 0; }\n' > "$input/a.c"
+          set +e
+          "$bin" "$input" > "$RUNNER_TEMP/panic.out" 2> "$RUNNER_TEMP/panic.err"
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/panic.err"
+          test "$code" -eq 2 || { echo "the release panic exited $code, not 2" >&2; exit 1; }
+          test ! -s "$RUNNER_TEMP/panic.out" || { echo "the release panic wrote to stdout" >&2; exit 1; }
+          grep -q '^boxt: internal error: ' "$RUNNER_TEMP/panic.err"
+
       - name: 🧪 Test
         run: cargo test --workspace --locked --target ${{ matrix.target }} --features boxt/fault-fixtures,boxt-collector/fault-fixtures

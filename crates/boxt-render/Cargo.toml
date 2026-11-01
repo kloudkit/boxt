@@ -7,4 +7,5 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+anstyle.workspace = true
 boxt-core = { path = "../boxt-core" }

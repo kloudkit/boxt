@@ -65,9 +65,29 @@ fn the_boxt_binary_exits_on_its_memory_cap() {
     assert_eq!(fixture.attempts, 2);
 }
 
+#[cfg(feature = "fault-fixtures")]
+#[test]
+fn the_boxt_binary_catches_a_reader_panic_as_a_worker() {
+    let dir = tree("reader-panic", &["a.c", "boxt-fixture-panic.c"]);
+    let jobs = cxx_jobs(&dir.0).unwrap().jobs;
+    let report = pool::run(&binary_config(None), jobs).unwrap();
+    assert_eq!(report.read_count(), 1);
+    assert_eq!(report.spawns, 1);
+    let fixture = report
+        .jobs
+        .iter()
+        .find(|r| format!("{:?}", r.job.file).contains("boxt-fixture-panic"))
+        .unwrap();
+    assert!(
+        format!("{:?}", fixture.outcome.file).contains("Fault(Panic)"),
+        "{:?}",
+        fixture.outcome
+    );
+}
+
 fn collect(args: &[&std::ffi::OsStr]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_boxt"))
-        .arg("collect")
+        .arg("__collect")
         .args(args)
         .output()
         .unwrap()

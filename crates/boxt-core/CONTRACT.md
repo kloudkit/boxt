@@ -84,7 +84,14 @@ message through a format that is not self-describing and refuses `deserialize_an
 - In any other format: the byte form, through `serialize_bytes`, read back through
   `deserialize_byte_buf` and `from_bytes`.
 - Nothing in `boxt-core`, the readers, the rules or verdict escapes `Text`. Each renderer
-  escapes it once.
+  escapes it once. The terminal's is `boxt_render::escape` (Story 1.10, FR-46): C0
+  controls (tab and LF included) and DEL as `\xNN`; C1 controls, every Unicode format
+  character (general category Cf, from a static table at Unicode 15.1, so the bidi controls
+  and zero-width characters too) and the line and paragraph separators U+2028 and U+2029
+  as `\u{NNNN}`; undecodable bytes as `\xNN`; and `\` as `\\`. Everything else prints
+  as is, a variation selector such as U+FE0F (not Cf) included.
+- Rule, behaviour, evidence and target ids, script names and the input-scope text are
+  validated or closed values, and print unescaped.
 
 ### Decoding (FR-10, RA2-M4)
 
@@ -297,8 +304,8 @@ treat `\` as an escape on every host. `path_under(X)` normalizes `X` with
 `boxt_rules::evaluate(corpus, facts) -> Matched{findings, observations}` is the one matcher.
 
 - **Order (S2-A4).** `facts` arrive in canonical order: the caller flattens
-  `Collected.facts` in order, which is already `CanonicalKey` order (the bin wires this in
-  Story 1.10; today only `crates/boxt/tests/seed.rs` does). `boxt-rules` never re-sorts them, and
+  `Collected.facts` in order, which is already `CanonicalKey` order (the bin does this
+  since Story 1.10). `boxt-rules` never re-sorts them, and
   "first fact" always means first in that slice. Its outputs are `SortedVec`s, and it holds
   no fact in a hash map.
 - **Field values.** `Fact::field(name) -> Option<FieldValue>` is the one name-to-value map,
@@ -550,7 +557,7 @@ are:
   reports `Fault(Panic)` for the entry being read, and goes on.
 - Only the parent ever stops a worker. Cancelling a job means killing its worker and
   starting a fresh one.
-- Startup (Story 1.4): the parent runs `current_exe()` with the hidden `worker` subcommand,
+- Startup (Story 1.4): the parent runs `current_exe()` with the hidden `__worker` subcommand,
   frames go over the child's stdin and stdout only, and its stderr is inherited. The
   `Settings` frame is read with the default `EntryMessageBytes` as its cap, since the limits
   arrive in it. The worker sets its OS memory cap from those limits before it reads a job. A
@@ -1052,8 +1059,9 @@ indexed by `InputRef.index`, supplied by the caller: verdict reads no filesystem
 - **Targets (FR-22).** With no target named every profile applies, in `TargetId` order;
   otherwise exactly the named ones. An unknown id is
   `VerdictError::UnknownTarget{id, known}`, `known` every loaded id. A run with no `Read`
-  outcome is `VerdictError::NothingRead` (FR-25). Targets are checked first. Story 1.10
-  wires `build` into the bin and maps both errors to exit 2.
+  outcome is `VerdictError::NothingRead` (FR-25). Targets are checked first.
+  `boxt_verdict::resolve_targets` is that same resolution, public, so the bin refuses an
+  unknown target before it scans anything; the bin maps both errors to exit 2.
 - **Tiers (FR-21).** For a target and a finding, the tier is the worst `BehaviourTier.tier`
   over every control listing the behaviour, or `Ready` when the profile allows it. A
   behaviour neither listed nor allowed is unmapped: it goes into `TargetVerdict.unmapped`,
@@ -1125,3 +1133,14 @@ exists without it and "ready" can never be shown without the list.
   the findings list. So one fixture given as `/a/x` and `/b/x`, or one root given twice,
   gets the same ids whichever input comes first.
 - `Result.findings` holds each finding with its id as `ReportedFinding{finding, id}`.
+
+## Labels (FR-26, AD-5, Story 1.10)
+
+`labels` is the one source of display text for closed values: one table each for `Tier`
+("blocked", "needs Windows", "needs code change", "ready with config", "ready"),
+`Confidence`, `NotCheckedReason` (a limit by its flag name, and the nested fault,
+special-file, link-target and I/O kinds), `RegionReason` and `OutOfScopeCause`, plus
+`HOST_DEPENDENT_TEXT`, the note a report prints under the input-scope warning when
+`Result.host_dependent` is set, and `HOST_DEPENDENT_MARK` for a host-dependent not-checked
+entry. Every renderer prints these and never writes its own; a renderer computes no count,
+tier, order or text that the `Result` or these tables already hold.

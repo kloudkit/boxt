@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -5,13 +6,19 @@ use std::time::{Duration, Instant};
 
 use boxt_collector::CapAllocator;
 use boxt_collector::bench::{cxx_jobs, measure_reads, parse_in_process};
+use boxt_collector::boxt_core::fact::Fact;
 use boxt_collector::boxt_core::limits::{LimitName, Limits};
 use boxt_collector::boxt_core::outcome::{FileOutcome, sm3_share, verdict_counts};
 use boxt_collector::boxt_core::settings::Settings;
+use boxt_collector::boxt_core::verdict::TargetId;
+use boxt_collector::boxt_core::{SortedVec, Text};
 use boxt_collector::path::text_from_path;
 use boxt_collector::pool::{self, PoolConfig, default_jobs};
 use boxt_collector::worker::WORKER_SUBCOMMAND;
 use boxt_collector::{Collected, RunOptions, RunStats};
+use boxt_rules::{embedded, evaluate, load_tar};
+use boxt_verdict::{VerdictInput, build, resolve_targets};
+use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
 #[global_allocator]
@@ -20,17 +27,30 @@ static ALLOCATOR: CapAllocator = CapAllocator;
 const EXIT_ERROR: u8 = 2;
 
 #[derive(Parser)]
-#[command(name = "boxt", version)]
+#[command(
+    name = "boxt",
+    version,
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    #[arg(value_name = "INPUT", required = true)]
+    inputs: Vec<PathBuf>,
+    #[arg(long = "target", value_name = "ID")]
+    targets: Vec<String>,
+    #[arg(long)]
+    jobs: Option<NonZeroU32>,
+    #[arg(long = "limit", value_name = "NAME=VALUE")]
+    limits: Vec<String>,
 }
 
 #[derive(Subcommand)]
 enum Command {
     #[command(name = WORKER_SUBCOMMAND, hide = true)]
     Worker,
-    #[command(hide = true)]
+    #[command(name = "__bench", hide = true)]
     Bench {
         root: PathBuf,
         #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..))]
@@ -38,14 +58,14 @@ enum Command {
         #[arg(long)]
         jobs: Option<NonZeroU32>,
     },
-    #[command(hide = true)]
+    #[command(name = "__measure", hide = true)]
     Measure {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
         #[arg(long)]
         jobs: Option<NonZeroU32>,
     },
-    #[command(hide = true)]
+    #[command(name = "__collect", hide = true)]
     Collect {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
@@ -62,9 +82,30 @@ enum Command {
 
 fn main() -> ExitCode {
     boxt_collector::os::suppress_error_dialogs();
-    let cli = Cli::parse();
+    std::panic::set_hook(Box::new(|info| {
+        let _ = writeln!(std::io::stderr(), "boxt: internal error: {info}");
+        std::process::exit(i32::from(EXIT_ERROR));
+    }));
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {
+            let _ = e.print();
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            let rendered = e.render().to_string();
+            eprint!(
+                "boxt: {}",
+                rendered.strip_prefix("error: ").unwrap_or(&rendered)
+            );
+            return ExitCode::from(EXIT_ERROR);
+        }
+    };
     match cli.command {
-        Some(Command::Worker) => boxt_collector::worker::run(),
+        Some(Command::Worker) => {
+            drop(std::panic::take_hook());
+            boxt_collector::worker::run()
+        }
         Some(Command::Bench { root, runs, jobs }) => bench(&root, runs, jobs),
         Some(Command::Measure { inputs, jobs }) => measure(&inputs, jobs),
         Some(Command::Collect {
@@ -74,8 +115,85 @@ fn main() -> ExitCode {
             measure,
             list,
         }) => collect(&inputs, jobs, &limits, measure, list),
-        None => ExitCode::SUCCESS,
+        None => match report(&cli.inputs, &cli.targets, cli.jobs, &cli.limits) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("boxt: {e}");
+                ExitCode::from(EXIT_ERROR)
+            }
+        },
     }
+}
+
+fn settings(
+    inputs: &[PathBuf],
+    targets: &[String],
+    jobs: Option<NonZeroU32>,
+    limits: &[String],
+) -> Result<Settings, String> {
+    let targets = targets
+        .iter()
+        .map(|t| TargetId::new(t.as_str()).map_err(|e| format!("--target {t}: {e}")))
+        .collect::<Result<SortedVec<_>, _>>()?;
+    Ok(Settings {
+        inputs: inputs.iter().map(|p| text_from_path(p)).collect(),
+        targets,
+        limits: parse_limits(limits)?,
+        encodings: Vec::new(),
+        excludes: Vec::new(),
+        ignored_macros: Default::default(),
+        jobs,
+        compile_database: None,
+    })
+}
+
+fn report(
+    inputs: &[PathBuf],
+    targets: &[String],
+    jobs: Option<NonZeroU32>,
+    limits: &[String],
+) -> Result<(), String> {
+    let settings = settings(inputs, targets, jobs, limits)?;
+    #[cfg(feature = "fault-fixtures")]
+    if inputs.iter().any(|p| {
+        p.file_name()
+            .is_some_and(|n| n == "boxt-fixture-main-panic")
+    }) {
+        panic!("fixture panic in the main process");
+    }
+    let roots = inputs
+        .iter()
+        .map(|p| std::path::absolute(p).map(|a| text_from_path(&a)))
+        .collect::<Result<Vec<Text>, _>>()
+        .map_err(|e| format!("cannot make an input path absolute: {e}"))?;
+    let corpus = load_tar(embedded()).map_err(|e| e.to_string())?;
+    resolve_targets(&settings.targets, &corpus.profiles).map_err(|e| e.to_string())?;
+    let collected = boxt_collector::run(&settings).map_err(|e| e.to_string())?;
+    let facts: Vec<Fact> = collected
+        .facts
+        .into_iter()
+        .flat_map(|file| file.facts)
+        .collect();
+    let matched = evaluate(&corpus, &facts);
+    let result = build(&VerdictInput {
+        targets: &settings.targets,
+        profiles: &corpus.profiles,
+        files: &collected.files,
+        findings: &matched.findings,
+        observations: &matched.observations,
+        macro_tables_cut: &collected.macro_tables_cut,
+        host_dependent_trees: &collected.host_dependent_trees,
+        roots: &roots,
+        compile_database_used: false,
+    })
+    .map_err(|e| e.to_string())?;
+    let stdout = std::io::stdout();
+    let styled = anstream::AutoStream::choice(&stdout) != anstream::ColorChoice::Never;
+    let text = boxt_render::terminal(&result, styled);
+    let mut out = anstream::AutoStream::auto(stdout.lock());
+    out.write_all(text.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("cannot write the report: {e}"))
 }
 
 fn parse_limits(given: &[String]) -> Result<Limits, String> {
@@ -110,7 +228,7 @@ fn collect(
     };
     let settings = Settings {
         inputs: inputs.iter().map(|p| text_from_path(p)).collect(),
-        targets: Default::default(),
+        targets: SortedVec::new(),
         limits,
         encodings: Vec::new(),
         excludes: Vec::new(),

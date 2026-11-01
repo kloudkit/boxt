@@ -63,7 +63,7 @@ jobs:
       - name: ⏱️ Benchmark N workers against N threads (gate)
         run: |
           set +e
-          "target/${{ matrix.target }}/release/boxt" bench bench-data/ace/ACE_wrappers --runs "$RUNS" | tee bench-gate.txt
+          "target/${{ matrix.target }}/release/boxt" __bench bench-data/ace/ACE_wrappers --runs "$RUNS" | tee bench-gate.txt
           status=${PIPESTATUS[0]}
           {
             echo "### ${{ matrix.target }}: N workers against N threads (gate)"
@@ -78,7 +78,7 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          "target/${{ matrix.target }}/release/boxt" bench bench-data/ace/ACE_wrappers --runs "$RUNS" --jobs 1 | tee bench-one.txt
+          "target/${{ matrix.target }}/release/boxt" __bench bench-data/ace/ACE_wrappers --runs "$RUNS" --jobs 1 | tee bench-one.txt
           status=${PIPESTATUS[0]}
           {
             echo "### ${{ matrix.target }}: one worker against one thread (informative)"

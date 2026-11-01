@@ -21,7 +21,7 @@ pub use crate::router::file_kind_by_name;
 use crate::router::{ByName, Fetched, Routed, by_name, fetch, route_content};
 use crate::{alloc, os};
 
-pub const WORKER_SUBCOMMAND: &str = "worker";
+pub const WORKER_SUBCOMMAND: &str = "__worker";
 
 pub const STARTUP_CAP_EXIT: i32 = 114;
 pub const STARTUP_PROTOCOL_EXIT: i32 = 115;

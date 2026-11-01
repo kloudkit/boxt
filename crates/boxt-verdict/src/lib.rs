@@ -58,6 +58,13 @@ impl fmt::Display for VerdictError {
 
 impl std::error::Error for VerdictError {}
 
+pub fn resolve_targets<'a>(
+    named: &SortedVec<TargetId>,
+    profiles: &'a [Profile],
+) -> std::result::Result<Vec<&'a Profile>, VerdictError> {
+    targets::resolve(named, profiles)
+}
+
 pub fn build(input: &VerdictInput<'_>) -> std::result::Result<Result, VerdictError> {
     let profiles = targets::resolve(input.targets, input.profiles)?;
     if !input
