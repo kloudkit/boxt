@@ -1,0 +1,6 @@
+corpus_version: 1.2.3
+behaviours:
+  - { id: needs-root, dimension: identity }
+  - { id: fixed-port, dimension: network }
+windows_guard_macros: [_WIN32, _MSC_VER]
+dynamic_load_symbols: [dlopen, LoadLibraryA]

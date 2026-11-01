@@ -336,7 +336,44 @@ pub struct FactKindSpec {
     pub kind: FactKind,
     pub name: &'static str,
     pub sources: &'static [SourceRule],
-    pub fields: &'static [&'static str],
+    pub fields: &'static [Field],
+}
+
+closed_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum FieldType {
+        Text,
+        Path,
+        Integer,
+        Bool,
+        TextList,
+        Guards,
+        Records,
+    }
+}
+
+impl FieldType {
+    pub const fn name(self) -> &'static str {
+        match self {
+            FieldType::Text => "text",
+            FieldType::Path => "path",
+            FieldType::Integer => "integer",
+            FieldType::Bool => "bool",
+            FieldType::TextList => "text_list",
+            FieldType::Guards => "guards",
+            FieldType::Records => "records",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    pub name: &'static str,
+    pub ty: FieldType,
+}
+
+const fn f(name: &'static str, ty: FieldType) -> Field {
+    Field { name, ty }
 }
 
 pub const COMMON_FIELDS: &[&str] = &["file_kind", "location"];
@@ -384,13 +421,21 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
         kind: FactKind::Call,
         name: "call",
         sources: SOURCE_CODE,
-        fields: &["callee", "args", "guards"],
+        fields: &[
+            f("callee", FieldType::Text),
+            f("args", FieldType::TextList),
+            f("guards", FieldType::Guards),
+        ],
     },
     FactKindSpec {
         kind: FactKind::Include,
         name: "include",
         sources: SOURCE_CODE,
-        fields: &["target", "system", "guards"],
+        fields: &[
+            f("target", FieldType::Text),
+            f("system", FieldType::Bool),
+            f("guards", FieldType::Guards),
+        ],
     },
     FactKindSpec {
         kind: FactKind::StringLiteral,
@@ -404,7 +449,7 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
             ),
             row(FileKind::Binary, FILE, PathRule::File, LineRule::Absent),
         ],
-        fields: &["value", "guards"],
+        fields: &[f("value", FieldType::Text), f("guards", FieldType::Guards)],
     },
     FactKindSpec {
         kind: FactKind::ConfigKey,
@@ -415,25 +460,29 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
             PathRule::File,
             LineRule::Required,
         )],
-        fields: &["key", "value"],
+        fields: &[f("key", FieldType::Text), f("value", FieldType::Text)],
     },
     FactKindSpec {
         kind: FactKind::GuardRegion,
         name: "guard_region",
         sources: SOURCE_CODE,
-        fields: &["region", "guards", "end_line"],
+        fields: &[
+            f("region", FieldType::Integer),
+            f("guards", FieldType::Guards),
+            f("end_line", FieldType::Integer),
+        ],
     },
     FactKindSpec {
         kind: FactKind::Import,
         name: "import",
         sources: BINARY_SYMBOL,
-        fields: &["symbol", "version"],
+        fields: &[f("symbol", FieldType::Text), f("version", FieldType::Text)],
     },
     FactKindSpec {
         kind: FactKind::Export,
         name: "export",
         sources: BINARY_SYMBOL,
-        fields: &["symbol", "version"],
+        fields: &[f("symbol", FieldType::Text), f("version", FieldType::Text)],
     },
     FactKindSpec {
         kind: FactKind::NeededLibrary,
@@ -444,19 +493,24 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
             PathRule::File,
             LineRule::Absent,
         )],
-        fields: &["name"],
+        fields: &[f("name", FieldType::Text)],
     },
     FactKindSpec {
         kind: FactKind::PackageFile,
         name: "package_file",
         sources: PACKAGE_HEADER,
-        fields: &["path", "mode", "user", "group"],
+        fields: &[
+            f("path", FieldType::Path),
+            f("mode", FieldType::Integer),
+            f("user", FieldType::Text),
+            f("group", FieldType::Text),
+        ],
     },
     FactKindSpec {
         kind: FactKind::PackageDependency,
         name: "package_dependency",
         sources: PACKAGE_HEADER,
-        fields: &["name", "constraint"],
+        fields: &[f("name", FieldType::Text), f("constraint", FieldType::Text)],
     },
     FactKindSpec {
         kind: FactKind::PackageScript,
@@ -467,7 +521,10 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
             PathRule::Frame,
             LineRule::Absent,
         )],
-        fields: &["name", "interpreter"],
+        fields: &[
+            f("name", FieldType::Text),
+            f("interpreter", FieldType::Text),
+        ],
     },
     FactKindSpec {
         kind: FactKind::ServiceSetting,
@@ -478,7 +535,11 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
             PathRule::File,
             LineRule::Required,
         )],
-        fields: &["section", "key", "value"],
+        fields: &[
+            f("section", FieldType::Text),
+            f("key", FieldType::Text),
+            f("value", FieldType::Text),
+        ],
     },
     FactKindSpec {
         kind: FactKind::ShellCommand,
@@ -492,7 +553,11 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
             ),
             row(FileKind::Service, FILE, PathRule::File, LineRule::Required),
         ],
-        fields: &["assignments", "argv", "redirections"],
+        fields: &[
+            f("assignments", FieldType::Records),
+            f("argv", FieldType::TextList),
+            f("redirections", FieldType::Records),
+        ],
     },
 ];
 
@@ -516,8 +581,12 @@ impl FactKind {
             .find(|r| r.file_kind == file_kind)
     }
 
-    pub fn fields(self) -> &'static [&'static str] {
+    pub fn fields(self) -> &'static [Field] {
         self.spec().fields
+    }
+
+    pub fn field(self, name: &str) -> Option<&'static Field> {
+        self.spec().fields.iter().find(|f| f.name == name)
     }
 
     pub fn from_name(name: &str) -> Option<FactKind> {

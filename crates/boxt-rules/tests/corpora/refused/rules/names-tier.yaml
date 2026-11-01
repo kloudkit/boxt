@@ -1,0 +1,10 @@
+schema: "1.0"
+id: identity/names-tier
+behaviour: needs-root
+title: Names a tier
+fix: Remove the tier.
+tier: blocked
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, field: callee, equals: setuid }

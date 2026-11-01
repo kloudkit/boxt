@@ -1,0 +1,9 @@
+schema: "1.0"
+id: identity/user-behaviour
+behaviour: user/needs-root
+title: User behaviour in the corpus
+fix: Use a corpus behaviour.
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, field: callee, equals: setuid }

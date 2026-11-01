@@ -1,0 +1,9 @@
+schema: "1.0"
+id: identity/unknown-key
+behaviour: needs-root
+title: Unknown key
+fix: Remove it.
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, all: [ { field: callee, equals: setuid, weight: 2 } ] }

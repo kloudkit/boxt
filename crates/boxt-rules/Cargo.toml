@@ -8,3 +8,15 @@ publish.workspace = true
 
 [dependencies]
 boxt-core = { path = "../boxt-core" }
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+sha2.workspace = true
+tar.workspace = true
+
+[build-dependencies]
+tar.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tar.workspace = true

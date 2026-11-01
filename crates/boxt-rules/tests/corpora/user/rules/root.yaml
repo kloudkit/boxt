@@ -1,0 +1,9 @@
+schema: "1.0"
+id: user/root
+behaviour: needs-root
+title: Site root helper
+fix: Drop the helper.
+evidence:
+  found: { id: user/root-helper, text: A call to site_become_root }
+match:
+  found: { kind: call, field: callee, equals: site_become_root }

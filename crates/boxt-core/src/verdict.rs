@@ -65,6 +65,8 @@ impl fmt::Display for IdError {
 
 impl std::error::Error for IdError {}
 
+pub const ID_SEGMENT_PATTERN: &str = "[a-z0-9]+(-[a-z0-9]+)*";
+
 pub fn validate_id(id: &str, min_segments: usize) -> StdResult<(), IdError> {
     if id.is_empty() {
         return Err(IdError::Empty);

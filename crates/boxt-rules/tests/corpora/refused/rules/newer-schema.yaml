@@ -1,0 +1,6 @@
+schema: "1.1"
+id: identity/newer-schema
+behaviour: needs-root
+title: Newer schema
+fix: Upgrade boxt.
+novel_key: true

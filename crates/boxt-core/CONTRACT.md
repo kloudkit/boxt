@@ -8,7 +8,8 @@ Story 1.1 spine review's `S-F` ids name where each rule comes from.
 `boxt-core` depends on no workspace crate (AD-1). Its dependencies are pure-Rust crates
 from the spine's Stack table, at the Stack versions, each added by the story that needs it.
 Story 1.1 adds `serde` (with `derive`) and `serde_json` only; base64 for `Text` is
-hand-written. Story 1.5 adds `encoding_rs`, for `decode` alone.
+hand-written. Story 1.5 adds `encoding_rs`, for `decode` alone. Story 1.7 adds `globset`, for `pattern`
+alone.
 
 ## Lists and order (AD-6)
 
@@ -267,7 +268,23 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   snapshot records the `{bytes_base64}` form.
 - To change facts: bump the version, then run the tests with `BOXT_WRITE_SNAPSHOT=1`, which
   writes the new version's file and never overwrites an existing one. Recorded snapshots
-  are never edited. Version 1.0 was re-recorded once, before anything shipped.
+  are never edited. Version 1.0 was re-recorded twice before anything shipped: once in
+  Story 1.1, and once in Story 1.7, when each field gained its `FieldType`.
+- Each `FACT_KINDS` field is a `Field{name, ty}`. `FieldType` is what a rule test can do with
+  the field: `text`, `path` (a `PathText`), `integer`, `bool`, `text_list` (the only type a
+  rule may index, `args.0`), `guards` (only `guard contains`) and `records` (lists of
+  structs, `assignments` and `redirections`, which no test reads). The snapshot records each
+  field's type, and a test checks each type against the field's serialized value.
+
+## Patterns (AD-20)
+
+`pattern::compile(source, mode)` and `pattern::path_under(prefix)` are the one pattern
+function, on `globset`. `PatternMode::Path` matches normalized paths and `*` stops at `/`;
+`PatternMode::Text` matches the whole value and `*` crosses `/`. Both are case-sensitive and
+treat `\` as an escape on every host. `path_under(X)` normalizes `X` with
+`normalize_value_path`, takes it literally and matches `X` or `X/**`. An empty pattern is
+`PatternError::Empty`; a glob that does not compile is `PatternError::Glob`. A rule's
+`pattern` test uses path mode on a `path` field and text mode on any other.
 
 ## Shell lexer (RA2-H5)
 
@@ -948,7 +965,8 @@ are:
 ## Verdict types (AD-5, AD-16, AD-19, RA2-M6)
 
 - `Tier`'s order runs worst to best, so the worst of several tiers is their minimum.
-- Ids are kebab-case segments joined by `/`. Rule ids have at least two segments
+- Ids are kebab-case segments joined by `/`; `ID_SEGMENT_PATTERN` is the regular expression
+  of one segment that `validate_id` accepts. Rule ids have at least two segments
   (`<dimension>/<name>`); user ids start with `user/`.
 - `Finding`, `Evidence`, `Observation`, `Coverage`, `Profile`, `Control` and `Result` live
   here. Their fields are minimal; later stories extend them.

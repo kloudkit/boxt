@@ -45,12 +45,40 @@ fn table_names_and_fields_match_the_enum() {
         assert_eq!(outer.keys().collect::<Vec<_>>(), vec![kind.name()]);
         let object = outer[kind.name()].as_object().unwrap();
         let serialized: BTreeSet<&str> = object.keys().map(String::as_str).collect();
-        let declared: BTreeSet<&str> = COMMON_FIELDS.iter().chain(kind.fields()).copied().collect();
+        let declared: BTreeSet<&str> = COMMON_FIELDS
+            .iter()
+            .copied()
+            .chain(kind.fields().iter().map(|f| f.name))
+            .collect();
         assert_eq!(serialized, declared, "{}", kind.name());
         assert_eq!(
             serde_json::to_value(kind).unwrap(),
             Value::from(kind.name())
         );
+    }
+}
+
+#[test]
+fn field_types_fit_the_serialized_values() {
+    use boxt_core::fact::FieldType;
+    for kind in FactKind::ALL {
+        let json = serde_json::to_value(sample_fact(kind)).unwrap();
+        let object = json[kind.name()].as_object().unwrap();
+        for field in kind.fields() {
+            let value = &object[field.name];
+            let fits = match field.ty {
+                FieldType::Text | FieldType::Path => value.is_string() || value.is_null(),
+                FieldType::Integer => value.is_u64() || value.is_null(),
+                FieldType::Bool => value.is_boolean(),
+                FieldType::TextList => value
+                    .as_array()
+                    .is_some_and(|a| a.iter().all(Value::is_string)),
+                FieldType::Guards | FieldType::Records => value
+                    .as_array()
+                    .is_some_and(|a| a.iter().all(Value::is_object)),
+            };
+            assert!(fits, "{} {} {value}", kind.name(), field.name);
+        }
     }
 }
 
@@ -706,7 +734,12 @@ fn render() -> String {
             )
             .unwrap();
         }
-        writeln!(out, "  fields: {}", spec.fields.join(", ")).unwrap();
+        let fields: Vec<String> = spec
+            .fields
+            .iter()
+            .map(|f| format!("{} ({})", f.name, f.ty.name()))
+            .collect();
+        writeln!(out, "  fields: {}", fields.join(", ")).unwrap();
         let Some(Payload::Struct(fields)) =
             fact_variants.get(&(spec.kind as u32, spec.name.to_owned()))
         else {

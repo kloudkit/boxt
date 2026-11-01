@@ -1,0 +1,9 @@
+schema: "1.0"
+id: user/site-daemon
+behaviour: user/site-daemon
+title: Starts the site daemon
+fix: Run the daemon as a sidecar.
+evidence:
+  found: { id: user/daemon-call, text: A call to start_site_daemon }
+match:
+  found: { kind: call, field: callee, equals: start_site_daemon }

@@ -1,0 +1,9 @@
+schema: "1.0"
+id: identity/unknown-kind
+behaviour: needs-root
+title: Unknown kind
+fix: Use a fact kind.
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: syscall, field: callee, equals: setuid }

@@ -1,0 +1,8 @@
+schema: "1.0"
+id: identity/no-title-no-fix
+behaviour: needs-root
+title: "  "
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, field: callee, equals: setuid }

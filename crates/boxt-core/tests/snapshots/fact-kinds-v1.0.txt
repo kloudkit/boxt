@@ -3,69 +3,69 @@ common: file_kind, location
 
 call
   from source: scopes file, function; path file; line required
-  fields: callee, args, guards
+  fields: callee (text), args (text_list), guards (guards)
   shape: {file_kind: FileKind, location: Location, callee: string, args: [string], guards: [GuardChain]}
 
 include
   from source: scopes file, function; path file; line required
-  fields: target, system, guards
+  fields: target (text), system (bool), guards (guards)
   shape: {file_kind: FileKind, location: Location, target: string, system: bool, guards: [GuardChain]}
 
 string_literal
   from source: scopes file, function; path file; line required
   from binary: scopes file; path file; line absent
-  fields: value, guards
+  fields: value (text), guards (guards)
   shape: {file_kind: FileKind, location: Location, value: string | {bytes_base64: string}, guards: [GuardChain]}
 
 config_key
   from config: scopes config_key; path file; line required
-  fields: key, value
+  fields: key (text), value (text)
   shape: {file_kind: FileKind, location: Location, key: string, value: string | null}
 
 guard_region
   from source: scopes file, function; path file; line required
-  fields: region, guards, end_line
+  fields: region (integer), guards (guards), end_line (integer)
   shape: {file_kind: FileKind, location: Location, region: u32, guards: [GuardChain], end_line: u32}
 
 import
   from binary: scopes symbol; path file; line absent
-  fields: symbol, version
+  fields: symbol (text), version (text)
   shape: {file_kind: FileKind, location: Location, symbol: string, version: string | null}
 
 export
   from binary: scopes symbol; path file; line absent
-  fields: symbol, version
+  fields: symbol (text), version (text)
   shape: {file_kind: FileKind, location: Location, symbol: string, version: string | null}
 
 needed_library
   from binary: scopes file; path file; line absent
-  fields: name
+  fields: name (text)
   shape: {file_kind: FileKind, location: Location, name: string}
 
 package_file
   from package: scopes file; path frame; line absent
-  fields: path, mode, user, group
+  fields: path (path), mode (integer), user (text), group (text)
   shape: {file_kind: FileKind, location: Location, path: PathText, mode: u32 | null, user: string | null, group: string | null}
 
 package_dependency
   from package: scopes file; path frame; line absent
-  fields: name, constraint
+  fields: name (text), constraint (text)
   shape: {file_kind: FileKind, location: Location, name: string, constraint: string | null}
 
 package_script
   from package: scopes script; path frame; line absent
-  fields: name, interpreter
+  fields: name (text), interpreter (text)
   shape: {file_kind: FileKind, location: Location, name: ScriptName, interpreter: string | null}
 
 service_setting
   from service: scopes unit_section; path file; line required
-  fields: section, key, value
+  fields: section (text), key (text), value (text)
   shape: {file_kind: FileKind, location: Location, section: string, key: string, value: string}
 
 shell_command
   from package: scopes script; path frame; line required
   from service: scopes file; path file; line required
-  fields: assignments, argv, redirections
+  fields: assignments (records), argv (text_list), redirections (records)
   shape: {file_kind: FileKind, location: Location, assignments: [Assignment], argv: [string], redirections: [Redirection]}
 
 types

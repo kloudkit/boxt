@@ -1,0 +1,9 @@
+schema: "1.0"
+id: openshift-restricted-v2
+version: "2026.1"
+allowed: [fixed-port]
+controls:
+  - id: run-as-non-root
+    behaviours: [ { behaviour: needs-root, tier: blocked } ]
+  - id: seccomp
+    not_detectable: Seccomp is set by the runtime, not visible in the artifact.

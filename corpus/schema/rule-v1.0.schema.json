@@ -1,0 +1,5335 @@
+{
+  "$defs": {
+    "child_call": {
+      "else": {
+        "$ref": "#/$defs/node_call"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_config_key": {
+      "else": {
+        "$ref": "#/$defs/node_config_key"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_export": {
+      "else": {
+        "$ref": "#/$defs/node_export"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_guard_region": {
+      "else": {
+        "$ref": "#/$defs/node_guard_region"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_import": {
+      "else": {
+        "$ref": "#/$defs/node_import"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_include": {
+      "else": {
+        "$ref": "#/$defs/node_include"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_needed_library": {
+      "else": {
+        "$ref": "#/$defs/node_needed_library"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_package_dependency": {
+      "else": {
+        "$ref": "#/$defs/node_package_dependency"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_package_file": {
+      "else": {
+        "$ref": "#/$defs/node_package_file"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_package_script": {
+      "else": {
+        "$ref": "#/$defs/node_package_script"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_root": {
+      "else": {
+        "$ref": "#/$defs/node_root"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_service_setting": {
+      "else": {
+        "$ref": "#/$defs/node_service_setting"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_shell_command": {
+      "else": {
+        "$ref": "#/$defs/node_shell_command"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "child_string_literal": {
+      "else": {
+        "$ref": "#/$defs/node_string_literal"
+      },
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "evidence_entry": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "id": {
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*$",
+      "type": "string"
+    },
+    "node": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "call"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_call"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "include"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_include"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "string_literal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_string_literal"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "config_key"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_config_key"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "guard_region"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_guard_region"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "import"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_import"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "export"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_export"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "needed_library"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_needed_library"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "package_file"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_package_file"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "package_dependency"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_package_dependency"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "package_script"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_package_script"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "service_setting"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_service_setting"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "shell_command"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/node_shell_command"
+          }
+        }
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "call",
+            "include",
+            "string_literal",
+            "config_key",
+            "guard_region",
+            "import",
+            "export",
+            "needed_library",
+            "package_file",
+            "package_dependency",
+            "package_script",
+            "service_setting",
+            "shell_command"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "node_call": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "callee"
+                      ]
+                    },
+                    {
+                      "pattern": "^(args)\\.(0|[1-9][0-9]*)$",
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "callee"
+                      ]
+                    },
+                    {
+                      "pattern": "^(args)\\.(0|[1-9][0-9]*)$",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "callee"
+                  ]
+                },
+                {
+                  "pattern": "^(args)\\.(0|[1-9][0-9]*)$",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "guard_contains"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "guard_contains"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_call"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_call"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_call"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "callee"
+              ]
+            },
+            {
+              "pattern": "^(args)\\.(0|[1-9][0-9]*)$",
+              "type": "string"
+            }
+          ]
+        },
+        "guard_contains": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "kind": {
+          "const": "call"
+        },
+        "not": {
+          "$ref": "#/$defs/child_call"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_config_key": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "key",
+                        "value"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "key",
+                        "value"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "key",
+                    "value"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_config_key"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_config_key"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_config_key"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "key",
+                "value"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "config_key"
+        },
+        "not": {
+          "$ref": "#/$defs/child_config_key"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_export": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "symbol",
+                        "version"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "symbol",
+                        "version"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "symbol",
+                    "version"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_export"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_export"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_export"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "symbol",
+                "version"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "export"
+        },
+        "not": {
+          "$ref": "#/$defs/child_export"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_guard_region": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line",
+                        "region",
+                        "end_line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line",
+                        "region",
+                        "end_line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line",
+                    "region",
+                    "end_line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "guard_contains"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "guard_contains"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_guard_region"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_guard_region"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_guard_region"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "region",
+                "end_line"
+              ]
+            }
+          ]
+        },
+        "guard_contains": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "kind": {
+          "const": "guard_region"
+        },
+        "not": {
+          "$ref": "#/$defs/child_guard_region"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_import": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "symbol",
+                        "version"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "symbol",
+                        "version"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "symbol",
+                    "version"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_import"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_import"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_import"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "symbol",
+                "version"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "import"
+        },
+        "not": {
+          "$ref": "#/$defs/child_import"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_include": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "target"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "boolean"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "system"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "target"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "system"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "target"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "guard_contains"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "guard_contains"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_include"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_include"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_include"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "target",
+                "system"
+              ]
+            }
+          ]
+        },
+        "guard_contains": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "kind": {
+          "const": "include"
+        },
+        "not": {
+          "$ref": "#/$defs/child_include"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_needed_library": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "name"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "name"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "name"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_needed_library"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_needed_library"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_needed_library"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "name"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "needed_library"
+        },
+        "not": {
+          "$ref": "#/$defs/child_needed_library"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_package_dependency": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "name",
+                        "constraint"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "name",
+                        "constraint"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "name",
+                    "constraint"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_package_dependency"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_package_dependency"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_package_dependency"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "name",
+                "constraint"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "package_dependency"
+        },
+        "not": {
+          "$ref": "#/$defs/child_package_dependency"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_package_file": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "path",
+                        "user",
+                        "group"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line",
+                        "mode"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "path",
+                        "user",
+                        "group"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line",
+                        "mode"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "path",
+                    "user",
+                    "group"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path",
+                    "path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line",
+                    "mode"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_package_file"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_package_file"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_package_file"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "path",
+                "mode",
+                "user",
+                "group"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "package_file"
+        },
+        "not": {
+          "$ref": "#/$defs/child_package_file"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_package_script": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "name",
+                        "interpreter"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "name",
+                        "interpreter"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "name",
+                    "interpreter"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_package_script"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_package_script"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_package_script"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "name",
+                "interpreter"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "package_script"
+        },
+        "not": {
+          "$ref": "#/$defs/child_package_script"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_root": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_root"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_root"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_root"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "not": {
+          "$ref": "#/$defs/child_root"
+        }
+      },
+      "type": "object"
+    },
+    "node_service_setting": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "section",
+                        "key",
+                        "value"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "section",
+                        "key",
+                        "value"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "section",
+                    "key",
+                    "value"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_service_setting"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_service_setting"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_service_setting"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "section",
+                "key",
+                "value"
+              ]
+            }
+          ]
+        },
+        "kind": {
+          "const": "service_setting"
+        },
+        "not": {
+          "$ref": "#/$defs/child_service_setting"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_shell_command": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope"
+                      ]
+                    },
+                    {
+                      "pattern": "^(argv)\\.(0|[1-9][0-9]*)$",
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope"
+                      ]
+                    },
+                    {
+                      "pattern": "^(argv)\\.(0|[1-9][0-9]*)$",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope"
+                  ]
+                },
+                {
+                  "pattern": "^(argv)\\.(0|[1-9][0-9]*)$",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_shell_command"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_shell_command"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_shell_command"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope"
+              ]
+            },
+            {
+              "pattern": "^(argv)\\.(0|[1-9][0-9]*)$",
+              "type": "string"
+            }
+          ]
+        },
+        "kind": {
+          "const": "shell_command"
+        },
+        "not": {
+          "$ref": "#/$defs/child_shell_command"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_string_literal": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "equals": {
+                  "type": "string"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "value"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "equals": {
+                  "type": "integer"
+                },
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "required": [
+            "equals",
+            "field"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "file_kind",
+                        "location.path",
+                        "location.scope",
+                        "value"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "field": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "location.line"
+                      ]
+                    }
+                  ]
+                },
+                "one_of": {
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ],
+          "required": [
+            "one_of",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "file_kind",
+                    "location.path",
+                    "location.scope",
+                    "value"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "pattern",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.path"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "path_under",
+            "field"
+          ]
+        },
+        {
+          "properties": {
+            "field": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "location.line"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "number",
+            "field"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "guard_contains"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "co_occurs"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "all"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "field"
+            ]
+          },
+          "required": [
+            "not"
+          ]
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "equals"
+                ]
+              },
+              {
+                "required": [
+                  "one_of"
+                ]
+              },
+              {
+                "required": [
+                  "pattern"
+                ]
+              },
+              {
+                "required": [
+                  "path_under"
+                ]
+              },
+              {
+                "required": [
+                  "number"
+                ]
+              },
+              {
+                "required": [
+                  "guard_contains"
+                ]
+              },
+              {
+                "required": [
+                  "co_occurs"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              },
+              {
+                "required": [
+                  "any"
+                ]
+              },
+              {
+                "required": [
+                  "not"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              }
+            ]
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ],
+      "properties": {
+        "all": {
+          "items": {
+            "$ref": "#/$defs/child_string_literal"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "any": {
+          "items": {
+            "$ref": "#/$defs/child_string_literal"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "co_occurs": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "$ref": "#/$defs/child_string_literal"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "scope": {
+              "enum": [
+                "function",
+                "file",
+                "package"
+              ]
+            }
+          },
+          "required": [
+            "scope",
+            "all"
+          ],
+          "type": "object"
+        },
+        "equals": {},
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "file_kind",
+                "location.path",
+                "location.line",
+                "location.scope",
+                "value"
+              ]
+            }
+          ]
+        },
+        "guard_contains": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "kind": {
+          "const": "string_literal"
+        },
+        "not": {
+          "$ref": "#/$defs/child_string_literal"
+        },
+        "number": {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "<",
+                "<=",
+                "=",
+                ">=",
+                ">"
+              ]
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        "one_of": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "path_under": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "pattern": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "rule_id": {
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)+$",
+      "type": "string"
+    }
+  },
+  "$id": "boxt:rule-v1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "match": {
+            "required": [
+              "found"
+            ]
+          }
+        },
+        "required": [
+          "match"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "required": [
+              "found"
+            ]
+          }
+        },
+        "required": [
+          "evidence"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence": {
+            "required": [
+              "found"
+            ]
+          }
+        },
+        "required": [
+          "evidence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "match": {
+            "required": [
+              "found"
+            ]
+          }
+        },
+        "required": [
+          "match"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "match": {
+            "required": [
+              "suspected"
+            ]
+          }
+        },
+        "required": [
+          "match"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "required": [
+              "suspected"
+            ]
+          }
+        },
+        "required": [
+          "evidence"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence": {
+            "required": [
+              "suspected"
+            ]
+          }
+        },
+        "required": [
+          "evidence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "match": {
+            "required": [
+              "suspected"
+            ]
+          }
+        },
+        "required": [
+          "match"
+        ]
+      }
+    }
+  ],
+  "not": {
+    "anyOf": [
+      {
+        "required": [
+          "target"
+        ]
+      },
+      {
+        "required": [
+          "targets"
+        ]
+      },
+      {
+        "required": [
+          "tier"
+        ]
+      },
+      {
+        "required": [
+          "tiers"
+        ]
+      }
+    ]
+  },
+  "properties": {
+    "behaviour": {
+      "$ref": "#/$defs/id"
+    },
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "found": {
+          "$ref": "#/$defs/evidence_entry"
+        },
+        "suspected": {
+          "$ref": "#/$defs/evidence_entry"
+        }
+      },
+      "type": "object"
+    },
+    "fix": {
+      "pattern": "\\S",
+      "type": "string"
+    },
+    "id": {
+      "$ref": "#/$defs/rule_id"
+    },
+    "match": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "found": {
+          "$ref": "#/$defs/child_root"
+        },
+        "suspected": {
+          "$ref": "#/$defs/child_root"
+        }
+      },
+      "type": "object"
+    },
+    "schema": {
+      "anyOf": [
+        {
+          "const": "1.0"
+        },
+        {
+          "const": 1.0
+        }
+      ]
+    },
+    "title": {
+      "pattern": "\\S",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "behaviour",
+    "title",
+    "fix",
+    "evidence",
+    "match"
+  ],
+  "title": "boxt rule, schema 1.0",
+  "type": "object"
+}

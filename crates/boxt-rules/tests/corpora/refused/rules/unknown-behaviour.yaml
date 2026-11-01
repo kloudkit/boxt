@@ -1,0 +1,9 @@
+schema: "1.0"
+id: identity/unknown-behaviour
+behaviour: needs-roots
+title: Unknown behaviour
+fix: Register it.
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, field: callee, equals: setuid }

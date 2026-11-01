@@ -1,0 +1,10 @@
+schema: "1.0"
+id: identity/names-target
+behaviour: needs-root
+title: Names a target
+fix: Remove the target.
+targets: [openshift-restricted-v2]
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, field: callee, equals: setuid }

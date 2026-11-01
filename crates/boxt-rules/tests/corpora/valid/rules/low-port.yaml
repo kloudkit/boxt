@@ -1,0 +1,22 @@
+schema: "1.0"
+id: network/low-port
+behaviour: fixed-port
+title: Binds a port below 1024
+fix: Listen on a port at or above 1024.
+evidence:
+  suspected: { id: low-port-literal, text: A bind next to a port literal below 1024 }
+match:
+  suspected:
+    any:
+      - kind: call
+        all:
+          - { field: callee, one_of: [bind, listen] }
+          - not: { field: location.path, path_under: tests }
+          - { guard_contains: HAVE_SOCKETS }
+      - co_occurs:
+          scope: function
+          all:
+            - { kind: call, field: callee, pattern: "*bind*" }
+            - { kind: config_key, field: value, equals: "80" }
+      - { kind: package_file, field: mode, number: { op: "<", value: 1024 } }
+      - { kind: import }

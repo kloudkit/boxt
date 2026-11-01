@@ -1,0 +1,15 @@
+schema: "1.0"
+id: identity/needs-root-setuid
+behaviour: needs-root
+title: Calls setuid(0)
+fix: Run as a non-root user and drop the setuid call.
+evidence:
+  found: { id: setuid-zero, text: A call to setuid with a literal 0 }
+  suspected: { id: setuid-any, text: A call to setuid with a non-literal argument }
+match:
+  found:
+    kind: call
+    all: [ { field: callee, equals: setuid }, { field: args.0, equals: "0" } ]
+  suspected:
+    kind: call
+    all: [ { field: callee, equals: setuid } ]

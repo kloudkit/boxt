@@ -1,0 +1,6 @@
+schema: "1.0"
+id: empty-control
+version: "1"
+controls:
+  - id: nothing
+    behaviours: []

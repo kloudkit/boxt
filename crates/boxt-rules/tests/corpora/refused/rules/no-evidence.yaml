@@ -1,0 +1,10 @@
+schema: "1.0"
+id: identity/no-evidence
+behaviour: needs-root
+title: Suspected without evidence
+fix: Add the evidence.
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, field: callee, equals: setuid }
+  suspected: { kind: call, field: callee, equals: seteuid }

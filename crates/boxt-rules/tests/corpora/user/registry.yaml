@@ -1,0 +1,3 @@
+corpus_version: 0.1.0
+behaviours:
+  - { id: user/site-daemon, dimension: user/site }

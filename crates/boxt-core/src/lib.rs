@@ -30,6 +30,7 @@ pub mod limits;
 pub mod location;
 pub mod message;
 pub mod outcome;
+pub mod pattern;
 pub mod read;
 pub mod settings;
 pub mod shell;

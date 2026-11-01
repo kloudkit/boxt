@@ -1,0 +1,9 @@
+schema: "1.0"
+id: identity/unknown-field
+behaviour: needs-root
+title: Unknown field
+fix: Spell the field.
+evidence:
+  found: { id: e, text: t }
+match:
+  found: { kind: call, field: calee, equals: setuid }
