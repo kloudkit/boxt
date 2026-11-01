@@ -36,6 +36,17 @@ impl Atom {
         }
     }
 
+    pub(crate) fn columns(&self) -> usize {
+        self.width
+    }
+
+    pub(crate) fn paint(&self, p: &Painter) -> String {
+        self.parts
+            .iter()
+            .map(|(style, text)| p.paint(*style, text))
+            .collect()
+    }
+
     fn split(&self, max: usize) -> Vec<Atom> {
         let mut pieces = Vec::new();
         let mut parts: Vec<(Style, String)> = Vec::new();
@@ -202,32 +213,12 @@ pub(crate) fn emit(
     }
 }
 
-pub(crate) fn boxed(
-    out: &mut String,
-    p: &Painter,
-    width: usize,
-    title: Option<Atom>,
-    paras: &[Para],
-) {
+pub(crate) fn boxed(out: &mut String, p: &Painter, width: usize, paras: &[Para]) {
     let inner = width.saturating_sub(4);
-    let mut heading = None;
-    match title {
-        Some(title) if title.width + 5 <= width => {
-            let (text, w) = line(p, std::slice::from_ref(&title));
-            out.push_str("┌ ");
-            out.push_str(&text);
-            out.push(' ');
-            out.push_str(&"─".repeat(width - 4 - w));
-            out.push_str("┐\n");
-        }
-        other => {
-            out.push('┌');
-            out.push_str(&"─".repeat(width.saturating_sub(2)));
-            out.push_str("┐\n");
-            heading = other.map(|t| Para::new().atom(t));
-        }
-    }
-    for para in heading.iter().chain(paras) {
+    out.push('┌');
+    out.push_str(&"─".repeat(width.saturating_sub(2)));
+    out.push_str("┐\n");
+    for para in paras {
         for atoms in para.wrap(inner, inner) {
             let (text, w) = line(p, &atoms);
             out.push_str("│ ");

@@ -206,15 +206,15 @@ fn sections_come_in_order() {
     let order = [
         "│ Source only: results describe the code",
         "│ Some files were ended by a time or memory limit of this host;",
-        "\n┌ docker-default ───",
-        "│ [needs Windows]  1 found ",
-        "│ 5 files read · 2 not checked · 0.8% of source lines not checked ",
-        "\n┌ kubernetes-restricted ───",
-        "│ [needs code change … blocked]  1 found ",
-        "\nsetuid  1 found\n  identity/setuid\n    fix  Start as the user.\n",
-        "    ● ev\\u{202e}il\\x09\\u{200b}.c:7  in ",
-        "      uid_t)  id-change-call  9c1e00000000-1\n",
-        "        guard #ifdef _WIN32\n",
+        "\ndocker-default  [needs Windows]  1 found\n",
+        "\nkubernetes-restricted  [needs code change … blocked]  1 found · 1 unmapped\n",
+        "\n5 files read · 2 not checked · 0.8% of source lines not checked\n",
+        "\nFindings   ● found  ○ suspected\n",
+        "\nsetuid  1 found",
+        " identity/setuid\n  fix  Start as the user.\n",
+        "  ● ev\\u{202e}il\\x09\\u{200b}.c:7  in ",
+        "    uid_t)\n    id-change-call · 9c1e00000000-1\n",
+        "    guard #ifdef _WIN32\n",
         "\nNot checked\n",
         "  kubernetes-restricted: unmapped behaviour user/foo",
         "  broken.c: unparseable",
@@ -263,7 +263,10 @@ fn every_tier_prints_its_label() {
         result.targets = targets.into_iter().collect();
         let report = terminal(&result, false);
         assert!(
-            report.contains(&format!("│ [{}]  1 found ", labels::tier(tier))),
+            report.contains(&format!(
+                "\ndocker-default  [{}]  1 found\n",
+                labels::tier(tier)
+            )),
             "{report}"
         );
         let styled = terminal(&result, true);
@@ -278,7 +281,7 @@ fn every_tier_prints_its_label() {
 fn a_range_prints_both_tiers_in_one_badge() {
     let report = terminal(&sample(false), false);
     assert!(
-        report.contains("│ [needs code change … blocked]  "),
+        report.contains("\nkubernetes-restricted  [needs code change … blocked]  "),
         "{report}"
     );
     let mut result = sample(false);
@@ -288,7 +291,7 @@ fn a_range_prints_both_tiers_in_one_badge() {
         with_suspected: Tier::Blocked,
     };
     result.targets = targets.into_iter().collect();
-    assert!(terminal(&result, false).contains("│ [blocked]  1 found"));
+    assert!(terminal(&result, false).contains("\ndocker-default  [blocked]  1 found\n"));
 }
 
 #[test]
@@ -296,7 +299,7 @@ fn hostile_names_are_escaped() {
     let report = terminal(&sample(false), false);
     assert!(
         report.contains(
-            "    ● ev\\u{202e}il\\x09\\u{200b}.c:7  in drop\\u{202e}\\u{200b}_to(const char *, \n      uid_t)"
+            "  ● ev\\u{202e}il\\x09\\u{200b}.c:7  in drop\\u{202e}\\u{200b}_to(const char *, \n    uid_t)\n"
         ),
         "{report}"
     );
@@ -349,8 +352,9 @@ fn a_lower_bound_share_says_at_least() {
         "{report}"
     );
     assert!(
-        report
-            .contains("│ 5 files read · 2 not checked · at least 0 of 0 source lines not checked "),
+        report.contains(
+            "\n5 files read · 2 not checked · at least 0 of 0 source lines not checked\n"
+        ),
         "{report}"
     );
 }
@@ -362,7 +366,7 @@ fn a_missing_line_share_says_n_a() {
     result.sm3.files = None;
     let report = terminal(&result, false);
     assert!(
-        report.contains("│ 5 files read · 2 not checked · source lines not checked: n/a "),
+        report.contains("\n5 files read · 2 not checked · source lines not checked: n/a\n"),
         "{report}"
     );
     assert!(
@@ -451,7 +455,7 @@ fn empty_sections_print_none() {
     result.targets = targets.into_iter().collect();
     let report = terminal(&result, false);
     assert!(
-        report.contains("\n\nFindings\n  none\n\nNot checked\n"),
+        report.contains("\n\nFindings   none\n\nNot checked\n"),
         "{report}"
     );
     assert!(
@@ -820,45 +824,45 @@ const SEED_GOLDEN: &str = r#"
 │ or packages for a richer result.                                             │
 └──────────────────────────────────────────────────────────────────────────────┘
 
-┌ kubernetes-restricted ───────────────────────────────────────────────────────┐
-│ [blocked]  7 found · 1 suspected                                             │
-│ 5 files read · 0 not checked · 0.0% of source lines not checked              │
-└──────────────────────────────────────────────────────────────────────────────┘
+target                 verdict    found  suspected  allowed
+kubernetes-restricted  [blocked]      7          1        –
+5 files read · 0 not checked · 0.0% of source lines not checked
 
-Findings
-  ● found  ○ suspected
+Findings   ● found  ○ suspected
 
-low-port  1 found
-  network/low-port
-    fix  Listen on a port at or above 1024 and map it to the low port in the
-         container runtime.
-    ● low-port.c:11  in listen_http(void)  htons-low-literal  8cd6bfbb1cd6-1
+low-port  1 found                                               network/low-port
+  fix  Listen on a port at or above 1024 and map it to the low port in the
+       container runtime.
+  ● low-port.c:11  in listen_http(void)
+    htons-low-literal · 8cd6bfbb1cd6-1
 
-needs-root  2 found · 1 suspected
-  identity/needs-root
-    fix  Run as a non-root user; drop the switch to user or group 0 and the
-         calls that need root.
-    ● needs-root.c:6  in become_root(void)  switch-to-root  22f82d5b8473-1
-    ○ needs-root.c:8  in become_root(void)  root-only-call  22f82d5b8473-2
-    ● needs-root.c:13  in become_root_fully(void)  switch-to-root
-      67658c4225d3-1
+needs-root  2 found · 1 suspected                            identity/needs-root
+  fix  Run as a non-root user; drop the switch to user or group 0 and the calls
+       that need root.
+  ● needs-root.c:6  in become_root(void)
+    switch-to-root · 22f82d5b8473-1
+  ○ needs-root.c:8  in become_root(void)
+    root-only-call · 22f82d5b8473-2
+  ● needs-root.c:13  in become_root_fully(void)
+    switch-to-root · 67658c4225d3-1
 
-registry  2 found
-  os-coupling/registry
-    fix  Read the setting from a configuration file or the environment instead
-         of the registry.
-    ● registry.c:8  in read_setting(DWORD *)  registry-call  a932e98472ec-1
-        guard #ifdef _WIN32
-    ● registry.c:10  in read_setting(DWORD *)  registry-call  a932e98472ec-2
-        guard #ifdef _WIN32
+registry  2 found                                           os-coupling/registry
+  fix  Read the setting from a configuration file or the environment instead of
+       the registry.
+  ● registry.c:8  in read_setting(DWORD *)
+    registry-call · a932e98472ec-1
+    guard #ifdef _WIN32
+  ● registry.c:10  in read_setting(DWORD *)
+    registry-call · a932e98472ec-2
+    guard #ifdef _WIN32
 
-setuid  2 found
-  identity/setuid
-    fix  Start as the user and groups the program needs, and drop the
-         id-changing calls.
-    ● needs-root.c:6  in become_root(void)  id-change-call  600ca31d27d3-1
-    ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)  id-change-call
-      bdb745a285af-1
+setuid  2 found                                                  identity/setuid
+  fix  Start as the user and groups the program needs, and drop the id-changing
+       calls.
+  ● needs-root.c:6  in become_root(void)
+    id-change-call · 600ca31d27d3-1
+  ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)
+    id-change-call · bdb745a285af-1
 
 Not checked
   none
@@ -912,13 +916,14 @@ setuid  2 found · 1 suspected
   identity/setuid
     fix  Start as the user and groups the program needs, and drop the
          id-changing calls.
-    ● needs-root.c:6  in become_root(void)  id-change-call  600ca31d27d3-1
-    ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)  id-change-call
-      bdb745a285af-1
+    ● needs-root.c:6  in become_root(void)
+      id-change-call · 600ca31d27d3-1
+    ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)
+      id-change-call · bdb745a285af-1
   user/setuid-x
     fix  Ask the site team.
-    ○ setuid.c:9  in drop_to(const char *, uid_t, gid_t)  id-change-call
-      bdb745a285af-2
+    ○ setuid.c:9  in drop_to(const char *, uid_t, gid_t)
+      id-change-call · bdb745a285af-2
 ";
     assert!(tail.starts_with(expected), "{report}");
     assert_eq!(report.matches("Ask the site team.").count(), 1);
@@ -940,10 +945,10 @@ fn a_long_signature_wraps_with_a_hanging_indent() {
     let report = terminal(&result, false);
     assert!(widest(&report) <= 80, "{report}");
     let expected = "
-    ● misc.c:7  in subprocess(const char *, const char *, int, char **,\x20
-      FILE **, u_int, struct passwd *, privdrop_fn *, privrestore_fn *)
-      id-change-call  9c1e00000000-1
-        guard #ifdef _WIN32
+  ● misc.c:7  in subprocess(const char *, const char *, int, char **, FILE **,\x20
+    u_int, struct passwd *, privdrop_fn *, privrestore_fn *)
+    id-change-call · 9c1e00000000-1
+    guard #ifdef _WIN32
 ";
     assert!(report.contains(expected), "{report}");
 }
@@ -962,17 +967,17 @@ fn a_long_guard_and_fix_wrap_under_their_label() {
     let lines = lines_of(&report);
     let guard = lines
         .iter()
-        .position(|l| l.starts_with("        guard #if defined(HAVE_SETRESUID)"))
+        .position(|l| l.starts_with("    guard #if defined(HAVE_SETRESUID)"))
         .unwrap();
     assert!(
-        lines[guard + 1].starts_with("              defined("),
+        lines[guard + 1].starts_with("          defined("),
         "{report}"
     );
     let fix = lines
         .iter()
-        .position(|l| l.starts_with("    fix  word"))
+        .position(|l| l.starts_with("  fix  word"))
         .unwrap();
-    assert!(lines[fix + 1].starts_with("         word"), "{report}");
+    assert!(lines[fix + 1].starts_with("       word"), "{report}");
 }
 
 #[test]
@@ -1004,10 +1009,10 @@ fn wide_characters_are_measured_by_display_width() {
     }
     let report = terminal(&result, false);
     assert!(
-        report.contains(&format!("\n    ● {wide}:7\n      in drop")),
+        report.contains(&format!("\n  ● {wide}:7  in\n    drop")),
         "{report}"
     );
-    assert_eq!(format!("    ● {wide}:7").width(), 78);
+    assert_eq!(format!("  ● {wide}:7  in").width(), 80);
 }
 
 #[test]
@@ -1122,7 +1127,7 @@ fn every_line_of_the_seed_fits_at_the_narrowest_width() {
         assert!(line.width() <= 60, "{line:?}");
     }
     assert!(
-        report.contains("│ [blocked]  7 found · 1 suspected "),
+        report.contains("\nkubernetes-restricted  [blocked]  7 found · 1 suspected\n"),
         "{report}"
     );
 }
@@ -1166,10 +1171,9 @@ fn a_style_never_spans_a_line_break() {
         let plain = at_width(&result, width, false);
         assert!(styled.contains("\x1b[2m22f82d5b8473-1\x1b[0m"), "{styled}");
         assert!(styled.contains("\x1b[1mneeds-root\x1b[0m"), "{styled}");
-        assert!(
-            styled.contains("\x1b[1mkubernetes-restricted\x1b[0m"),
-            "{styled}"
-        );
+        if width == 80 {
+            assert!(styled.contains("\x1b[1m\x1b[4mtarget "), "{styled}");
+        }
         assert!(styled.contains(" NEEDS CODE CHANGE \x1b[0m…"), "{styled}");
         let stripped = String::from_utf8(strip_sgr(styled.as_bytes())).unwrap();
         assert_eq!(stripped.lines().count(), plain.lines().count());
@@ -1241,15 +1245,24 @@ fn the_regions_of_a_file_print_on_one_line() {
 }
 
 #[test]
-fn a_target_box_counts_found_suspected_and_allowed() {
+fn a_target_line_counts_found_suspected_and_allowed() {
     for ((found, suspected, allowed), text) in [
-        ((3, 0, 10), "│ [needs Windows]  3 found · 10 allowed "),
+        (
+            (3, 0, 10),
+            "\ndocker-default  [needs Windows]  3 found · 10 allowed\n",
+        ),
         (
             (12, 1, 26),
-            "│ [needs Windows]  12 found · 1 suspected · 26 allowed ",
+            "\ndocker-default  [needs Windows]  12 found · 1 suspected · 26 allowed\n",
         ),
-        ((0, 2, 0), "│ [needs Windows]  2 suspected "),
-        ((0, 0, 0), "│ [needs Windows]  no findings "),
+        (
+            (0, 2, 0),
+            "\ndocker-default  [needs Windows]  2 suspected\n",
+        ),
+        (
+            (0, 0, 0),
+            "\ndocker-default  [needs Windows]  no findings\n",
+        ),
     ] {
         let mut result = sample(false);
         let mut targets = result.targets.into_vec();
@@ -1264,8 +1277,8 @@ fn a_target_box_counts_found_suspected_and_allowed() {
 
 #[test]
 fn no_line_overflows_even_where_optimal_fit_would() {
-    let url = format!("https://example.invalid/{}", "a".repeat(44));
-    assert_eq!(url.len(), 68);
+    let url = format!("https://example.invalid/{}", "a".repeat(46));
+    assert_eq!(url.len(), 70);
     let mut result = sample(false);
     result.groups[0].rules[0].fix = format!("See {url}");
     result.input_scope_text = format!("See {url}");
@@ -1279,10 +1292,10 @@ fn no_line_overflows_even_where_optimal_fit_would() {
     }
     let report = terminal(&result, false);
     assert!(
-        report.contains(&format!("    fix  See\n         {url}\n")),
+        report.contains(&format!("  fix  See\n       {url}\n")),
         "{report}"
     );
-    assert!(report.contains(&format!("│ See {url}     │\n")), "{report}");
+    assert!(report.contains(&format!("│ See {url}   │\n")), "{report}");
 }
 
 #[test]
@@ -1306,7 +1319,7 @@ fn spaces_inside_a_value_are_kept_even_at_a_break() {
     findings[0].finding.location.path = Some(RelPath::try_from(" a.c").unwrap());
     result.findings = findings.into_iter().collect();
     let report = terminal(&result, false);
-    assert!(report.contains("\n    ●  a.c:7  in "), "{report}");
+    assert!(report.contains("\n  ●  a.c:7  in "), "{report}");
     assert!(report.contains("\n   a.c: unparseable\n"), "{report}");
     assert!(
         report.contains(&format!(
@@ -1328,10 +1341,12 @@ fn one_file_no_reader_understands_is_singular() {
 }
 
 #[test]
-fn a_target_box_counts_unmapped_behaviours() {
+fn a_target_line_counts_unmapped_behaviours() {
     let report = terminal(&sample(false), false);
     assert!(
-        report.contains("│ [needs code change … blocked]  1 found · 1 unmapped "),
+        report.contains(
+            "\nkubernetes-restricted  [needs code change … blocked]  1 found · 1 unmapped\n"
+        ),
         "{report}"
     );
     let mut result = sample(false);
@@ -1340,7 +1355,7 @@ fn a_target_box_counts_unmapped_behaviours() {
     result.targets = targets.into_iter().collect();
     let report = terminal(&result, false);
     assert!(
-        report.contains("│ [needs code change … blocked]  1 unmapped "),
+        report.contains("\nkubernetes-restricted  [needs code change … blocked]  1 unmapped\n"),
         "{report}"
     );
     assert!(!report.contains("no findings"), "{report}");
@@ -1355,6 +1370,180 @@ fn a_suspected_only_group_names_only_its_suspected_count() {
     result.groups[0].found = 0;
     result.groups[0].suspected = 1;
     let report = terminal(&result, false);
-    assert!(report.contains("\nlow-port  1 suspected\n"), "{report}");
-    assert!(report.contains("\n    ○ low-port.c:11  in "), "{report}");
+    assert!(report.contains("\nlow-port  1 suspected  "), "{report}");
+    assert!(report.contains("\n  ○ low-port.c:11  in "), "{report}");
+}
+
+fn verdict(target: &str, tier: Tier, counts: (u64, u64, u64), unmapped: &[&str]) -> TargetVerdict {
+    TargetVerdict {
+        target: TargetId::new(target).unwrap(),
+        range: TierRange {
+            found: tier,
+            with_suspected: tier,
+        },
+        found: counts.0,
+        suspected: counts.1,
+        allowed: counts.2,
+        unmapped: unmapped
+            .iter()
+            .map(|b| BehaviourId::new(*b).unwrap())
+            .collect(),
+    }
+}
+
+fn four_targets(unmapped: &[&str]) -> Result {
+    let mut result = seed_shaped();
+    result.targets = [
+        verdict("docker-default", Tier::NeedsWindows, (3, 0, 10), &[]),
+        verdict("kubernetes-restricted", Tier::Blocked, (7, 1, 0), unmapped),
+        verdict("openshift-restricted-v2", Tier::Blocked, (7, 1, 0), &[]),
+        verdict("rootless-podman", Tier::NeedsWindows, (7, 1, 0), &[]),
+    ]
+    .into_iter()
+    .collect();
+    result
+}
+
+fn styled_at(result: &Result, width: usize) -> String {
+    render(
+        result,
+        &TerminalOptions {
+            styled: true,
+            width,
+            all: false,
+        },
+    )
+}
+
+#[test]
+fn targets_print_as_one_aligned_table() {
+    let report = terminal(&four_targets(&[]), false);
+    let expected = "
+target                   verdict          found  suspected  allowed
+docker-default           [needs Windows]      3          –       10
+kubernetes-restricted    [blocked]            7          1        –
+openshift-restricted-v2  [blocked]            7          1        –
+rootless-podman          [needs Windows]      7          1        –
+5 files read · 0 not checked · 0.0% of source lines not checked
+
+Findings   ● found  ○ suspected
+";
+    assert!(report.contains(expected), "{report}");
+    assert!(!report.contains("unmapped"), "{report}");
+}
+
+#[test]
+fn the_unmapped_column_appears_only_when_a_target_has_some() {
+    let report = terminal(&four_targets(&["user/foo", "user/bar"]), false);
+    let lines = lines_of(&report);
+    let header = lines.iter().position(|l| l.starts_with("target ")).unwrap();
+    assert!(lines[header].ends_with("  allowed  unmapped"), "{report}");
+    assert!(lines[header + 1].ends_with("10         –"), "{report}");
+    assert!(lines[header + 2].ends_with("–         2"), "{report}");
+    assert!(widest(&report) <= 80, "{report}");
+}
+
+#[test]
+fn styled_table_rows_alternate_dim_and_plain_has_no_banding() {
+    let result = four_targets(&[]);
+    let styled = styled_at(&result, 80);
+    let lines = lines_of(&styled);
+    let header = lines
+        .iter()
+        .position(|l| l.contains("target ") && l.contains("verdict"))
+        .unwrap();
+    assert!(
+        lines[header].starts_with("\x1b[1m\x1b[4mtarget "),
+        "{:?}",
+        lines[header]
+    );
+    for (row, target) in [
+        "docker-default",
+        "kubernetes-restricted",
+        "openshift-restricted-v2",
+        "rootless-podman",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let line = lines[header + 1 + row];
+        if row % 2 == 1 {
+            assert!(
+                line.starts_with(&format!("\x1b[2m{target}\x1b[0m")),
+                "{line:?}"
+            );
+            assert!(line.contains("\x1b[2m1\x1b[0m"), "{line:?}");
+        } else {
+            assert!(line.starts_with(&format!("{target} ")), "{line:?}");
+            assert!(!line.contains("\x1b[2m"), "{line:?}");
+        }
+        assert!(line.contains("\x1b[1m"), "{line:?}");
+        assert!(
+            line.contains(&format!(
+                " {} \x1b[0m",
+                if row % 3 == 0 {
+                    "NEEDS WINDOWS"
+                } else {
+                    "BLOCKED"
+                }
+            )),
+            "{line:?}"
+        );
+    }
+    let plain = terminal(&result, false);
+    assert!(!plain.contains('\x1b'));
+    let stripped = String::from_utf8(strip_sgr(styled.as_bytes())).unwrap();
+    for (s, p) in stripped.lines().zip(plain.lines()) {
+        assert_eq!(s.width(), p.width(), "{s:?} / {p:?}");
+    }
+}
+
+#[test]
+fn below_72_columns_each_target_gets_one_line() {
+    let result = four_targets(&[]);
+    let narrow = at_width(&result, 71, false);
+    assert!(!narrow.contains("\ntarget "), "{narrow}");
+    for line in [
+        "docker-default  [needs Windows]  3 found · 10 allowed",
+        "kubernetes-restricted  [blocked]  7 found · 1 suspected",
+        "openshift-restricted-v2  [blocked]  7 found · 1 suspected",
+        "rootless-podman  [needs Windows]  7 found · 1 suspected",
+    ] {
+        assert!(
+            lines_of(&narrow).contains(&line),
+            "{line:?} not in\n{narrow}"
+        );
+    }
+    assert!(
+        styled_at(&result, 71)
+            .contains("kubernetes-restricted  \x1b[1m\x1b[97m\x1b[41m BLOCKED \x1b[0m  7 found"),
+    );
+    assert!(at_width(&result, 72, false).contains("\ntarget "));
+}
+
+#[test]
+fn one_rule_sits_on_its_group_heading_and_two_rules_get_sub_lines() {
+    let report = terminal(&seed_shaped(), false);
+    let lines = lines_of(&report);
+    let heading = lines
+        .iter()
+        .find(|l| l.starts_with("needs-root  "))
+        .unwrap();
+    assert!(
+        heading.starts_with("needs-root  2 found · 1 suspected  "),
+        "{heading:?}"
+    );
+    assert!(heading.ends_with("  identity/needs-root"), "{heading:?}");
+    assert_eq!(heading.width(), 80);
+    assert!(!lines.contains(&"  identity/needs-root"), "{report}");
+    assert!(
+        report.contains("\n  fix  Run as a non-root user;"),
+        "{report}"
+    );
+    let narrow = at_width(&seed_shaped(), 60, false);
+    let heading = lines_of(&narrow)
+        .into_iter()
+        .find(|l| l.starts_with("needs-root  "))
+        .unwrap();
+    assert_eq!(heading.width(), 60, "{narrow}");
 }

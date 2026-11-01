@@ -12,6 +12,7 @@ use boxt_core::verdict::{
     Confidence, Group, GroupKey, LineRange, NotCheckedEntry, ReportedFinding, Result,
     TargetVerdict, Tier, TierRange,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::escape::escape;
 use crate::layout::{Atom, PLAIN, Painter, Para, boxed, emit};
@@ -69,6 +70,8 @@ pub struct TerminalOptions {
 
 const BOLD: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
+const HEADER: Style = Style::new().bold().underline();
+const TABLE_MIN_WIDTH: usize = 72;
 
 pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     let p = Painter {
@@ -81,22 +84,12 @@ pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     if result.host_dependent {
         header.push(Para::new().plain(labels::HOST_DEPENDENT_TEXT));
     }
-    boxed(&mut out, &p, width, None, &header);
+    boxed(&mut out, &p, width, &header);
     out.push('\n');
-    for target in result.targets.iter() {
-        target_box(&mut out, &p, width, result, target);
-        out.push('\n');
-    }
+    targets(&mut out, &p, width, result);
+    out.push('\n');
     let by_id: BTreeMap<&FindingId, &ReportedFinding> =
         result.findings.iter().map(|f| (&f.id, f)).collect();
-    emit(
-        &mut out,
-        &p,
-        width,
-        &Para::new().text("Findings", BOLD),
-        "",
-        "",
-    );
     let legend = if result.groups.is_empty() {
         "none".to_owned()
     } else {
@@ -112,9 +105,11 @@ pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
         &mut out,
         &p,
         width,
-        &Para::new().plain(&legend),
+        &Para::new()
+            .text("Findings", BOLD)
+            .plain(&format!("   {legend}")),
+        "",
         "  ",
-        "    ",
     );
     out.push('\n');
     for group in &result.groups {
@@ -180,10 +175,7 @@ fn target_counts(target: &TargetVerdict) -> String {
         (target.found, "found"),
         (target.suspected, "suspected"),
         (target.allowed, "allowed"),
-        (
-            u64::try_from(target.unmapped.len()).unwrap_or(u64::MAX),
-            "unmapped",
-        ),
+        (unmapped_count(target), "unmapped"),
     ]
     .into_iter()
     .filter(|(n, _)| *n > 0)
@@ -196,24 +188,100 @@ fn target_counts(target: &TargetVerdict) -> String {
     }
 }
 
-fn target_box(
-    out: &mut String,
-    p: &Painter,
-    width: usize,
-    result: &Result,
-    target: &TargetVerdict,
-) {
-    let title = Atom::new(vec![(BOLD, target.target.as_str().to_owned())]);
-    let verdict = Para::new()
-        .atom(range_badge(p, target.range))
-        .plain(&format!("  {}", target_counts(target)));
+fn count_cell(n: u64) -> String {
+    if n == 0 {
+        "–".to_owned()
+    } else {
+        n.to_string()
+    }
+}
+
+fn unmapped_count(target: &TargetVerdict) -> u64 {
+    u64::try_from(target.unmapped.len()).unwrap_or(u64::MAX)
+}
+
+fn targets(out: &mut String, p: &Painter, width: usize, result: &Result) {
+    let rows: Vec<&TargetVerdict> = result.targets.iter().collect();
+    let with_unmapped = rows.iter().any(|t| !t.unmapped.is_empty());
+    let mut headers = vec!["target", "verdict", "found", "suspected", "allowed"];
+    if with_unmapped {
+        headers.push("unmapped");
+    }
+    let cells: Vec<(String, Atom, Vec<String>)> = rows
+        .iter()
+        .map(|t| {
+            let mut numbers = vec![
+                count_cell(t.found),
+                count_cell(t.suspected),
+                count_cell(t.allowed),
+            ];
+            if with_unmapped {
+                numbers.push(count_cell(unmapped_count(t)));
+            }
+            (
+                t.target.as_str().to_owned(),
+                range_badge(p, t.range),
+                numbers,
+            )
+        })
+        .collect();
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.width()).collect();
+    for (target, badge, numbers) in &cells {
+        widths[0] = widths[0].max(target.width());
+        widths[1] = widths[1].max(badge.columns());
+        for (i, n) in numbers.iter().enumerate() {
+            widths[i + 2] = widths[i + 2].max(n.width());
+        }
+    }
+    let total = widths.iter().sum::<usize>() + 2 * (widths.len() - 1);
+    if width >= TABLE_MIN_WIDTH && total <= width {
+        let mut header = String::new();
+        for (i, h) in headers.iter().enumerate() {
+            if i > 0 {
+                header.push_str("  ");
+            }
+            header.push_str(&aligned(h, widths[i], i >= 2));
+        }
+        out.push_str(&p.paint(HEADER, &header));
+        out.push('\n');
+        for (row, (target, badge, numbers)) in cells.iter().enumerate() {
+            let band = if row % 2 == 1 { DIM } else { PLAIN };
+            out.push_str(&p.paint(band, target));
+            out.push_str(&" ".repeat(widths[0] - target.width() + 2));
+            out.push_str(&badge.paint(p));
+            out.push_str(&" ".repeat(widths[1] - badge.columns()));
+            for (i, n) in numbers.iter().enumerate() {
+                out.push_str(&" ".repeat(2 + widths[i + 2] - n.width()));
+                out.push_str(&p.paint(band, n));
+            }
+            out.push('\n');
+        }
+    } else {
+        for (t, (target, badge, _)) in rows.iter().zip(cells) {
+            let para = Para::new()
+                .plain(&target)
+                .plain("  ")
+                .atom(badge)
+                .plain(&format!("  {}", target_counts(t)));
+            emit(out, p, width, &para, "", "  ");
+        }
+    }
     let files = Para::new().plain(&format!(
         "{} files read · {} not checked · {}",
         result.counts.read,
         result.counts.not_checked,
         sm3_share(&result.sm3)
     ));
-    boxed(out, p, width, Some(title), &[verdict, files]);
+    emit(out, p, width, &files, "", "  ");
+}
+
+fn aligned(text: &str, width: usize, right: bool) -> String {
+    let pad = " ".repeat(width.saturating_sub(text.width()));
+    if right {
+        format!("{pad}{text}")
+    } else {
+        format!("{text}{pad}")
+    }
 }
 
 fn sm3_share(sm3: &Sm3) -> String {
@@ -249,58 +317,77 @@ fn group_block(
     group: &Group,
 ) {
     let GroupKey::Behaviour(behaviour) = &group.key;
-    let heading = Para::new()
+    let tally = counts(group.found, group.suspected);
+    let used = behaviour.as_str().width() + 2 + tally.width();
+    let mut heading = Para::new()
         .text(behaviour.as_str(), BOLD)
-        .plain(&format!("  {}", counts(group.found, group.suspected)));
+        .plain(&format!("  {tally}"));
+    let inline = match group.rules.as_slice() {
+        [only] if used + 2 + only.rule.as_str().width() <= width => {
+            let pad = width - used - only.rule.as_str().width();
+            heading = heading.plain(&" ".repeat(pad)).plain(only.rule.as_str());
+            true
+        }
+        _ => false,
+    };
     emit(out, p, width, &heading, "", "  ");
+    let base = if inline { "  " } else { "    " };
     for section in &group.rules {
-        emit(
-            out,
-            p,
-            width,
-            &Para::new().plain(section.rule.as_str()),
-            "  ",
-            "    ",
-        );
+        if !inline {
+            emit(
+                out,
+                p,
+                width,
+                &Para::new().plain(section.rule.as_str()),
+                "  ",
+                "    ",
+            );
+        }
         emit(
             out,
             p,
             width,
             &Para::new().plain(&escape(&section.fix.as_str().into())),
-            "    fix  ",
-            "         ",
+            &format!("{base}fix  "),
+            &format!("{base}     "),
         );
         for id in &section.findings {
             if let Some(reported) = by_id.get(id) {
-                finding_line(out, p, width, inputs, reported);
+                finding_lines(out, p, width, inputs, base, reported);
             }
         }
     }
 }
 
-fn finding_line(
+fn finding_lines(
     out: &mut String,
     p: &Painter,
     width: usize,
     inputs: &Inputs,
+    base: &str,
     reported: &ReportedFinding,
 ) {
     let f = &reported.finding;
-    let mark = format!("    {} ", mark(f.confidence));
-    let para = location(Para::new(), inputs, &f.location, true)
-        .plain("  ")
-        .text(f.evidence.definition.as_str(), DIM)
-        .plain("  ")
-        .text(reported.id.as_str(), DIM);
-    emit(out, p, width, &para, &mark, "      ");
+    let under = format!("{base}  ");
+    let place = location(Para::new(), inputs, &f.location, true);
+    emit(
+        out,
+        p,
+        width,
+        &place,
+        &format!("{base}{} ", mark(f.confidence)),
+        &under,
+    );
+    let ids = Para::new().text(&format!("{} · {}", f.evidence.definition, reported.id), DIM);
+    emit(out, p, width, &ids, &under, &under);
     if !f.guards.is_empty() {
         emit(
             out,
             p,
             width,
             &Para::new().value(&guards(&f.guards), PLAIN),
-            "        guard ",
-            "              ",
+            &format!("{under}guard "),
+            &format!("{under}      "),
         );
     }
 }
