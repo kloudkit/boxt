@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/path-under-deep
+behaviour: b
+title: path-under-deep
+fix: Fix path-under-deep.
+evidence:
+  found: { id: path-under-deep-found, text: Found by path-under-deep }
+match:
+  found:
+    kind: package_file
+    field: path
+    path_under: /opt/x

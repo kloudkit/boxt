@@ -1,0 +1,20 @@
+schema: "1.0"
+id: eval/found-and-suspected-groups
+behaviour: c
+title: found-and-suspected-groups
+fix: Fix found-and-suspected-groups.
+evidence:
+  found: { id: both, text: Both calls in one file }
+  suspected: { id: one, text: One call in a file }
+match:
+  found:
+    co_occurs:
+      scope: file
+      all:
+        - { kind: call, field: callee, equals: socket }
+        - { kind: call, field: callee, equals: bind }
+  suspected:
+    co_occurs:
+      scope: file
+      all:
+        - { kind: call, field: callee, equals: bind }

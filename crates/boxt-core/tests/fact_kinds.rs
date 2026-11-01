@@ -83,6 +83,68 @@ fn field_types_fit_the_serialized_values() {
 }
 
 #[test]
+fn every_listed_field_resolves_on_a_sample_of_its_kind() {
+    use boxt_core::fact::FieldValue;
+    for kind in FactKind::ALL {
+        let fact = sample_fact(kind);
+        let empty = sample_fact_with(kind, false);
+        let json = serde_json::to_value(&empty).unwrap();
+        for field in kind.fields() {
+            let value = fact
+                .field(field.name)
+                .unwrap_or_else(|| panic!("{} {} does not resolve", kind.name(), field.name));
+            assert_eq!(value.ty(), field.ty, "{} {}", kind.name(), field.name);
+            let serialized = &serde_json::to_value(&fact).unwrap()[kind.name()][field.name];
+            let resolved = match &value {
+                FieldValue::Text(t) => Some(serde_json::to_value(t.as_ref()).unwrap()),
+                FieldValue::Path(p) => Some(serde_json::to_value(p).unwrap()),
+                FieldValue::Integer(n) => Some(Value::from(*n)),
+                FieldValue::Bool(b) => Some(Value::from(*b)),
+                FieldValue::TextList(l) => Some(serde_json::to_value(l).unwrap()),
+                FieldValue::Guards(_)
+                | FieldValue::Assignments(_)
+                | FieldValue::Redirections(_) => None,
+            };
+            if let Some(resolved) = resolved {
+                assert_eq!(&resolved, serialized, "{} {}", kind.name(), field.name);
+            }
+            let absent = json[kind.name()][field.name].is_null();
+            assert_eq!(
+                empty.field(field.name).is_none(),
+                absent,
+                "{} {}",
+                kind.name(),
+                field.name
+            );
+        }
+        assert_eq!(fact.field("file_kind"), None);
+        assert_eq!(fact.field("location"), None);
+        assert_eq!(fact.field("no_such_field"), None);
+    }
+}
+
+#[test]
+fn a_field_value_is_the_fact_value() {
+    use boxt_core::fact::FieldValue;
+    let call = sample_fact(FactKind::Call);
+    assert_eq!(
+        call.field("callee"),
+        Some(FieldValue::Text(std::borrow::Cow::Owned(Text::from(
+            "setuid"
+        ))))
+    );
+    let script = sample_fact(FactKind::PackageScript);
+    assert_eq!(
+        script.field("name"),
+        Some(FieldValue::Text(std::borrow::Cow::Owned(Text::from(
+            "post_install"
+        ))))
+    );
+    let file = sample_fact(FactKind::PackageFile);
+    assert_eq!(file.field("mode"), Some(FieldValue::Integer(0o104755)));
+}
+
+#[test]
 fn file_kind_names_are_their_serialized_names() {
     for kind in common::file_kinds() {
         assert_eq!(
@@ -684,6 +746,12 @@ fn closed_enum_all_lists_every_variant() {
     assert_eq!(unit_names(&Directive::ALL), serde_variants::<Directive>());
     assert_eq!(unit_names(&ScopeKind::ALL), serde_variants::<ScopeKind>());
     assert_eq!(unit_names(&ScriptName::ALL), serde_variants::<ScriptName>());
+    for name in ScriptName::ALL {
+        assert_eq!(
+            serde_json::to_value(name).unwrap(),
+            Value::from(name.name())
+        );
+    }
     assert_eq!(unit_names(&PathRule::ALL), serde_variants::<PathRule>());
     for rule in PathRule::ALL {
         assert_eq!(

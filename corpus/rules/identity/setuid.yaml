@@ -1,0 +1,24 @@
+schema: "1.0"
+id: identity/setuid
+behaviour: setuid
+title: Changes its user or group id
+fix: Start as the user and groups the program needs, and drop the id-changing calls.
+evidence:
+  found: { id: id-change-call, text: "A call that changes the process user, group or supplementary groups" }
+match:
+  found:
+    kind: call
+    field: callee
+    one_of:
+      - setuid
+      - seteuid
+      - setreuid
+      - setresuid
+      - setfsuid
+      - setgid
+      - setegid
+      - setregid
+      - setresgid
+      - setfsgid
+      - setgroups
+      - initgroups

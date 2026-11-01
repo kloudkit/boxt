@@ -1,0 +1,11 @@
+schema: "1.0"
+id: eval/not-missing-optional
+behaviour: b
+title: not-missing-optional
+fix: Fix not-missing-optional.
+evidence:
+  found: { id: not-missing-optional-found, text: Found by not-missing-optional }
+match:
+  found:
+    kind: config_key
+    not: { field: value, equals: "80" }

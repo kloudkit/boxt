@@ -1,0 +1,10 @@
+schema: "1.0"
+id: eval/exists
+behaviour: b
+title: exists
+fix: Fix exists.
+evidence:
+  found: { id: exists-found, text: Found by exists }
+match:
+  found:
+    kind: import

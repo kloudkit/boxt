@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/pattern-text
+behaviour: b
+title: pattern-text
+fix: Fix pattern-text.
+evidence:
+  found: { id: pattern-text-found, text: Found by pattern-text }
+match:
+  found:
+    kind: string_literal
+    field: value
+    pattern: "a*c"

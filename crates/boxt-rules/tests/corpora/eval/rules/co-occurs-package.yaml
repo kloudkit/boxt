@@ -1,0 +1,14 @@
+schema: "1.0"
+id: eval/co-occurs-package
+behaviour: b
+title: co-occurs-package
+fix: Fix co-occurs-package.
+evidence:
+  found: { id: co-occurs-package-found, text: Found by co-occurs-package }
+match:
+  found:
+    co_occurs:
+      scope: package
+      all:
+        - { kind: call, field: callee, equals: socket }
+        - { kind: package_file }

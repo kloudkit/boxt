@@ -1,0 +1,27 @@
+schema: "1.0"
+id: os-coupling/registry
+behaviour: registry
+title: Uses the Windows registry
+fix: Read the setting from a configuration file or the environment instead of the registry.
+evidence:
+  found: { id: registry-call, text: "A call to a Windows registry key or value function" }
+match:
+  found:
+    kind: call
+    any:
+      - { field: callee, pattern: "RegOpenKey*" }
+      - { field: callee, pattern: "RegCreateKey*" }
+      - { field: callee, pattern: "RegDeleteKey*" }
+      - { field: callee, pattern: "RegEnumKey*" }
+      - { field: callee, pattern: "RegQueryValue*" }
+      - { field: callee, pattern: "RegSetValue*" }
+      - { field: callee, pattern: "RegGetValue*" }
+      - { field: callee, pattern: "RegDeleteValue*" }
+      - { field: callee, pattern: "RegEnumValue*" }
+      - { field: callee, pattern: "RegQueryInfoKey*" }
+      - { field: callee, pattern: "RegCloseKey" }
+      - { field: callee, pattern: "RegFlushKey" }
+      - { field: callee, pattern: "RegLoadKey*" }
+      - { field: callee, pattern: "RegSaveKey*" }
+      - { field: callee, pattern: "RegNotifyChangeKeyValue" }
+      - { field: callee, pattern: "RegConnectRegistry*" }

@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/scope-script
+behaviour: b
+title: scope-script
+fix: Fix scope-script.
+evidence:
+  found: { id: scope-script-found, text: Found by scope-script }
+match:
+  found:
+    kind: package_script
+    field: location.scope
+    equals: post_install

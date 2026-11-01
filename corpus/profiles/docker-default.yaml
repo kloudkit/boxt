@@ -1,0 +1,7 @@
+schema: "1.0"
+id: docker-default
+version: provisional
+allowed: [needs-root, setuid, low-port]
+controls:
+  - id: linux-runtime
+    behaviours: [ { behaviour: registry, tier: needs_windows } ]

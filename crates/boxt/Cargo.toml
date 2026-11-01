@@ -15,3 +15,6 @@ boxt-verdict = { path = "../boxt-verdict" }
 
 [features]
 fault-fixtures = ["boxt-collector/fault-fixtures"]
+
+[dev-dependencies]
+serde_json.workspace = true

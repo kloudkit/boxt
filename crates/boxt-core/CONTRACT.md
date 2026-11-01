@@ -286,6 +286,57 @@ treat `\` as an escape on every host. `path_under(X)` normalizes `X` with
 `PatternError::Empty`; a glob that does not compile is `PatternError::Glob`. A rule's
 `pattern` test uses path mode on a `path` field and text mode on any other.
 
+## Rule matching (AD-9, FR-15, FR-44, Story 1.8)
+
+`boxt_rules::evaluate(corpus, facts) -> Matched{findings, observations}` is the one matcher.
+
+- **Order (S2-A4).** `facts` arrive in canonical order: the caller flattens
+  `Collected.facts` in order, which is already `CanonicalKey` order (the bin wires this in
+  Story 1.10; today only `crates/boxt/tests/seed.rs` does). `boxt-rules` never re-sorts them, and
+  "first fact" always means first in that slice. Its outputs are `SortedVec`s, and it holds
+  no fact in a hash map.
+- **Field values.** `Fact::field(name) -> Option<FieldValue>` is the one name-to-value map,
+  beside `FACT_KINDS`; a test resolves every listed field on a sample of its kind and checks
+  its `FieldType`. An absent `Option` field is `None`. A `package_script`'s `name` is its
+  `ScriptName::name()`, the serialized name. The common fields are resolved by
+  `boxt-rules`: `file_kind` is its snake_case name, `location.path` a path, `location.line`
+  an integer, and `location.scope` is text: the function's `qualified_name`, the symbol,
+  `section.key`, the config key or the script name; a `File` scope has no value.
+- **Tests.** A missing value or an index out of range makes a test false (so `not` of it is
+  true). `equals` and `one_of` compare text and path byte-exactly, integers and bools by
+  value; a path value and a path literal compare after `normalize_value_path`. `pattern`
+  and `path_under` use the compiled `Pattern`. `number` applies to integer fields and to a
+  kind's own text fields and `text_list` indexes, never to `file_kind` or `location.scope`;
+  a text value is read as a C integer literal (decimal, `0x` hex, leading-`0` octal, an
+  optional sign, any `u`/`l` suffixes), and a value that does not parse is false. This
+  widened the rule schema, which Story 1.8 re-recorded at 1.0 by operator decision, since
+  nothing has shipped. `guard_contains: X` holds when any frame of any guard chain lists
+  `X` in its `identifiers`.
+- **File identity (S2-A3).** A fact's file is its input index, its frames, its path and,
+  when its scope is `Script`, the `ScriptName`, so each install script of a package is a
+  file of its own, distinct from the package's entry 0.
+- **Co-occurrence.** `co_occurs{scope, all}` holds for an anchor fact when every
+  sub-matcher has a witness in the anchor's group; the anchor may be its own witness.
+  `file` groups facts of one file identity; `function` adds the `Scope::Function`, and a
+  fact outside a function has no function group; `package` groups facts under the same
+  innermost RPM or DEB frame (input index and frames through it), and a fact with no
+  package frame has no package group (RA2-L5). `all`, `any` and `not` combine predicates on
+  one fact, so an `all` across kinds without `co_occurs` never holds. A `kind` on a
+  top-level `co_occurs` means some member of the group has that kind; the finding still
+  sits at the group's first witness, which need not be of that kind.
+- **Findings.** A top-level matcher that is not `co_occurs` gives one finding per matching
+  fact, at that fact. A top-level `co_occurs` gives one finding per group, at the group's
+  first witness. `location` and `guards` come from that fact; `rule`, `behaviour`,
+  `confidence`, `evidence.definition` (the id of the match that held) and `fix` come from
+  the rule. A rule's `found` hits suppress its `suspected` ones: a suspected hit on a fact
+  is dropped when that fact is a found anchor or a member of a found group, and a
+  suspected hit on a group is dropped when it is a found group or any found anchor (the
+  fact a found finding sits at) is a member of it.
+- **Dynamic loading (RA2-M5).** Each binary `Import` whose `symbol` is in the manifest's
+  `dynamic_load_symbols` gives one `Observation::DynamicLoad{location, symbol}`, equal
+  observations (the same symbol imported twice at one location) kept once; a source call
+  never does.
+
 ## Shell lexer (RA2-H5)
 
 `shell::lex` is the only shell lexer. Everything that meets a script uses it: the router for

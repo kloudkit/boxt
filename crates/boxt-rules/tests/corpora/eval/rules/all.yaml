@@ -1,0 +1,13 @@
+schema: "1.0"
+id: eval/all
+behaviour: b
+title: all
+fix: Fix all.
+evidence:
+  found: { id: all-found, text: Found by all }
+match:
+  found:
+    kind: call
+    all:
+      - { field: callee, equals: setuid }
+      - { field: args.0, equals: "0" }

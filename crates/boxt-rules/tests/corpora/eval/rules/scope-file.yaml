@@ -1,0 +1,11 @@
+schema: "1.0"
+id: eval/scope-file
+behaviour: b
+title: scope-file
+fix: Fix scope-file.
+evidence:
+  found: { id: scope-file-found, text: Found by scope-file }
+match:
+  found:
+    kind: call
+    not: { field: location.scope, pattern: "*" }

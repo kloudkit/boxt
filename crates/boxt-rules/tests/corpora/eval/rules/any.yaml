@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/any
+behaviour: b
+title: any
+fix: Fix any.
+evidence:
+  found: { id: any-found, text: Found by any }
+match:
+  found:
+    any:
+      - { kind: call, field: callee, equals: setuid }
+      - { kind: import, field: symbol, equals: setuid }

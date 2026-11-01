@@ -1,0 +1,16 @@
+schema: "1.0"
+id: eval/mixed-found-group
+behaviour: c
+title: mixed-found-group
+fix: Fix mixed-found-group.
+evidence:
+  found: { id: both, text: Both calls in one file }
+  suspected: { id: bind, text: A bind call }
+match:
+  found:
+    co_occurs:
+      scope: file
+      all:
+        - { kind: call, field: callee, equals: socket }
+        - { kind: call, field: callee, equals: bind }
+  suspected: { kind: call, field: callee, equals: bind }

@@ -1,0 +1,11 @@
+schema: "1.0"
+id: eval/not
+behaviour: b
+title: not
+fix: Fix not.
+evidence:
+  found: { id: not-found, text: Found by not }
+match:
+  found:
+    kind: call
+    not: { field: callee, equals: setuid }

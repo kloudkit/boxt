@@ -548,8 +548,13 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "callee"
                   ]
+                },
+                {
+                  "pattern": "^(args)\\.(0|[1-9][0-9]*)$",
+                  "type": "string"
                 }
               ]
             }
@@ -917,7 +922,9 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "key",
+                    "value"
                   ]
                 }
               ]
@@ -1264,7 +1271,9 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "symbol",
+                    "version"
                   ]
                 }
               ]
@@ -1977,7 +1986,9 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "symbol",
+                    "version"
                   ]
                 }
               ]
@@ -2355,7 +2366,8 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "target"
                   ]
                 }
               ]
@@ -2718,7 +2730,8 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "name"
                   ]
                 }
               ]
@@ -3064,7 +3077,9 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "name",
+                    "constraint"
                   ]
                 }
               ]
@@ -3418,7 +3433,9 @@
                 {
                   "enum": [
                     "location.line",
-                    "mode"
+                    "mode",
+                    "user",
+                    "group"
                   ]
                 }
               ]
@@ -3767,7 +3784,9 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "name",
+                    "interpreter"
                   ]
                 }
               ]
@@ -4206,7 +4225,10 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "section",
+                    "key",
+                    "value"
                   ]
                 }
               ]
@@ -4562,6 +4584,10 @@
                   "enum": [
                     "location.line"
                   ]
+                },
+                {
+                  "pattern": "^(argv)\\.(0|[1-9][0-9]*)$",
+                  "type": "string"
                 }
               ]
             }
@@ -4906,7 +4932,8 @@
               "anyOf": [
                 {
                   "enum": [
-                    "location.line"
+                    "location.line",
+                    "value"
                   ]
                 }
               ]

@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/scope-function
+behaviour: b
+title: scope-function
+fix: Fix scope-function.
+evidence:
+  found: { id: scope-function-found, text: Found by scope-function }
+match:
+  found:
+    kind: call
+    field: location.scope
+    equals: ns::serve

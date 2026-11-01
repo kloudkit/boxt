@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/equals-path
+behaviour: b
+title: equals-path
+fix: Fix equals-path.
+evidence:
+  found: { id: equals-path-found, text: Found by equals-path }
+match:
+  found:
+    kind: package_file
+    field: path
+    equals: /opt//app/./bin/

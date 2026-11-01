@@ -64,6 +64,7 @@ dependencies = [
  "boxt-rules",
  "boxt-verdict",
  "clap",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/equals-bool
+behaviour: b
+title: equals-bool
+fix: Fix equals-bool.
+evidence:
+  found: { id: equals-bool-found, text: Found by equals-bool }
+match:
+  found:
+    kind: include
+    field: system
+    equals: true

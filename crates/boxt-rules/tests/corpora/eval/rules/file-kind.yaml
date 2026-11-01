@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/file-kind
+behaviour: b
+title: file-kind
+fix: Fix file-kind.
+evidence:
+  found: { id: file-kind-found, text: Found by file-kind }
+match:
+  found:
+    kind: string_literal
+    field: file_kind
+    equals: binary

@@ -1,0 +1,14 @@
+schema: "1.0"
+id: network/low-port
+behaviour: low-port
+title: Uses a port below 1024
+fix: Listen on a port at or above 1024 and map it to the low port in the container runtime.
+evidence:
+  found: { id: htons-low-literal, text: "A call to htons with a literal from 1 to 1023" }
+match:
+  found:
+    kind: call
+    all:
+      - { field: callee, equals: htons }
+      - { field: args.0, number: { op: ">", value: 0 } }
+      - { field: args.0, number: { op: "<", value: 1024 } }

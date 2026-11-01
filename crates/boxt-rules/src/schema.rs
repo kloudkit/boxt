@@ -151,9 +151,17 @@ fn child(body: &str) -> Value {
 }
 
 fn fields_of(kind: &FactKindSpec, types: &[FieldType]) -> Option<Value> {
+    fields_with_common(kind, types, types)
+}
+
+fn fields_with_common(
+    kind: &FactKindSpec,
+    types: &[FieldType],
+    common: &[FieldType],
+) -> Option<Value> {
     let names: Vec<&str> = COMMON_TEST_FIELDS
         .iter()
-        .filter(|(_, _, ty)| types.contains(ty))
+        .filter(|(_, _, ty)| common.contains(ty))
         .map(|(_, n, _)| *n)
         .chain(
             kind.fields
@@ -246,12 +254,20 @@ fn node_body(kind: Option<&FactKindSpec>) -> Value {
                 branches.push(json!({ "required": [test, "field"], "anyOf": alternatives }));
             }
         }
-        for (test, group) in [
-            ("pattern", &[FieldType::Text, FieldType::Path][..]),
-            ("path_under", &[FieldType::Path]),
-            ("number", &[FieldType::Integer]),
+        for (test, group, common) in [
+            (
+                "pattern",
+                &[FieldType::Text, FieldType::Path][..],
+                &[FieldType::Text, FieldType::Path][..],
+            ),
+            ("path_under", &[FieldType::Path], &[FieldType::Path]),
+            (
+                "number",
+                &[FieldType::Integer, FieldType::Text],
+                &[FieldType::Integer],
+            ),
         ] {
-            if let Some(fields) = fields_of(k, group) {
+            if let Some(fields) = fields_with_common(k, group, common) {
                 branches.push(json!({
                     "required": [test, "field"],
                     "properties": { "field": fields }

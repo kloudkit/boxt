@@ -1,0 +1,14 @@
+schema: "1.0"
+id: eval/co-occurs-function
+behaviour: b
+title: co-occurs-function
+fix: Fix co-occurs-function.
+evidence:
+  found: { id: co-occurs-function-found, text: Found by co-occurs-function }
+match:
+  found:
+    co_occurs:
+      scope: function
+      all:
+        - { kind: call, field: callee, equals: socket }
+        - { kind: call, field: callee, equals: bind }

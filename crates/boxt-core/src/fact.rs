@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -561,6 +562,40 @@ pub const FACT_KINDS: &[FactKindSpec] = &[
     },
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldValue<'a> {
+    Text(Cow<'a, Text>),
+    Path(&'a PathText),
+    Integer(u64),
+    Bool(bool),
+    TextList(&'a [Text]),
+    Guards(&'a [GuardChain]),
+    Assignments(&'a [Assignment]),
+    Redirections(&'a [Redirection]),
+}
+
+impl FieldValue<'_> {
+    pub const fn ty(&self) -> FieldType {
+        match self {
+            FieldValue::Text(_) => FieldType::Text,
+            FieldValue::Path(_) => FieldType::Path,
+            FieldValue::Integer(_) => FieldType::Integer,
+            FieldValue::Bool(_) => FieldType::Bool,
+            FieldValue::TextList(_) => FieldType::TextList,
+            FieldValue::Guards(_) => FieldType::Guards,
+            FieldValue::Assignments(_) | FieldValue::Redirections(_) => FieldType::Records,
+        }
+    }
+}
+
+fn text(t: &Text) -> Option<FieldValue<'_>> {
+    Some(FieldValue::Text(Cow::Borrowed(t)))
+}
+
+fn optional(t: &Option<Text>) -> Option<FieldValue<'_>> {
+    t.as_ref().map(|t| FieldValue::Text(Cow::Borrowed(t)))
+}
+
 impl FactKind {
     pub fn spec(self) -> &'static FactKindSpec {
         &FACT_KINDS[self as usize]
@@ -748,6 +783,55 @@ impl Fact {
             | Fact::PackageScript { .. }
             | Fact::ServiceSetting { .. }
             | Fact::ShellCommand { .. } => &[],
+        }
+    }
+
+    pub fn field(&self, name: &str) -> Option<FieldValue<'_>> {
+        match (self, name) {
+            (Fact::Call { callee, .. }, "callee") => text(callee),
+            (Fact::Call { args, .. }, "args") => Some(FieldValue::TextList(args)),
+            (Fact::Include { target, .. }, "target") => text(target),
+            (Fact::Include { system, .. }, "system") => Some(FieldValue::Bool(*system)),
+            (Fact::StringLiteral { value, .. }, "value") => text(value),
+            (Fact::ConfigKey { key, .. }, "key") => text(key),
+            (Fact::ConfigKey { value, .. }, "value") => optional(value),
+            (Fact::GuardRegion { region, .. }, "region") => {
+                Some(FieldValue::Integer(u64::from(region.0)))
+            }
+            (Fact::GuardRegion { end_line, .. }, "end_line") => {
+                Some(FieldValue::Integer(u64::from(*end_line)))
+            }
+            (Fact::Import { symbol, .. } | Fact::Export { symbol, .. }, "symbol") => text(symbol),
+            (Fact::Import { version, .. } | Fact::Export { version, .. }, "version") => {
+                optional(version)
+            }
+            (Fact::NeededLibrary { name, .. }, "name") => text(name),
+            (Fact::PackageFile { path, .. }, "path") => Some(FieldValue::Path(path)),
+            (Fact::PackageFile { mode, .. }, "mode") => {
+                mode.map(|m| FieldValue::Integer(u64::from(m)))
+            }
+            (Fact::PackageFile { user, .. }, "user") => optional(user),
+            (Fact::PackageFile { group, .. }, "group") => optional(group),
+            (Fact::PackageDependency { name, .. }, "name") => text(name),
+            (Fact::PackageDependency { constraint, .. }, "constraint") => optional(constraint),
+            (Fact::PackageScript { name, .. }, "name") => {
+                Some(FieldValue::Text(Cow::Owned(Text::from(name.name()))))
+            }
+            (Fact::PackageScript { interpreter, .. }, "interpreter") => optional(interpreter),
+            (Fact::ServiceSetting { section, .. }, "section") => text(section),
+            (Fact::ServiceSetting { key, .. }, "key") => text(key),
+            (Fact::ServiceSetting { value, .. }, "value") => text(value),
+            (Fact::ShellCommand { assignments, .. }, "assignments") => {
+                Some(FieldValue::Assignments(assignments))
+            }
+            (Fact::ShellCommand { argv, .. }, "argv") => Some(FieldValue::TextList(argv)),
+            (Fact::ShellCommand { redirections, .. }, "redirections") => {
+                Some(FieldValue::Redirections(redirections))
+            }
+            (_, "guards") if self.kind().field("guards").is_some() => {
+                Some(FieldValue::Guards(self.guards()))
+            }
+            _ => None,
         }
     }
 

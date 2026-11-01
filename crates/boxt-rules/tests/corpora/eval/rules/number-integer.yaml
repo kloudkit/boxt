@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/number-integer
+behaviour: b
+title: number-integer
+fix: Fix number-integer.
+evidence:
+  found: { id: number-integer-found, text: Found by number-integer }
+match:
+  found:
+    kind: package_file
+    field: mode
+    number: { op: ">=", value: 2048 }

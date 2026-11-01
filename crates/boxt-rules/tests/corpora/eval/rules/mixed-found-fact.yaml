@@ -1,0 +1,15 @@
+schema: "1.0"
+id: eval/mixed-found-fact
+behaviour: c
+title: mixed-found-fact
+fix: Fix mixed-found-fact.
+evidence:
+  found: { id: bind, text: A bind call }
+  suspected: { id: socket-file, text: A file with a socket call }
+match:
+  found: { kind: call, field: callee, equals: bind }
+  suspected:
+    co_occurs:
+      scope: file
+      all:
+        - { kind: call, field: callee, equals: socket }

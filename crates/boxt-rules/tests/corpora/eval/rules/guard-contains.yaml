@@ -1,0 +1,11 @@
+schema: "1.0"
+id: eval/guard-contains
+behaviour: b
+title: guard-contains
+fix: Fix guard-contains.
+evidence:
+  found: { id: guard-contains-found, text: Found by guard-contains }
+match:
+  found:
+    kind: call
+    guard_contains: _WIN32

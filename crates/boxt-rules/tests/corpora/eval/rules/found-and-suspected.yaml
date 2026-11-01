@@ -1,0 +1,18 @@
+schema: "1.0"
+id: eval/found-and-suspected
+behaviour: c
+title: found-and-suspected
+fix: Fix found-and-suspected.
+evidence:
+  found: { id: literal-zero, text: A literal zero }
+  suspected: { id: any-call, text: Any call }
+match:
+  found:
+    kind: call
+    all:
+      - { field: callee, equals: setuid }
+      - { field: args.0, equals: "0" }
+  suspected:
+    kind: call
+    field: callee
+    equals: setuid

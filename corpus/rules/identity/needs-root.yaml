@@ -1,0 +1,25 @@
+schema: "1.0"
+id: identity/needs-root
+behaviour: needs-root
+title: Needs to run as root
+fix: Run as a non-root user; drop the switch to user or group 0 and the calls that need root.
+evidence:
+  found: { id: switch-to-root, text: "A call that sets the user or group id to the literal 0" }
+  suspected: { id: root-only-call, text: "A call to chroot, mount or mknod, which need root" }
+match:
+  found:
+    kind: call
+    any:
+      - all:
+          - { field: callee, one_of: [setuid, seteuid, setgid, setegid] }
+          - { field: args.0, number: { op: "=", value: 0 } }
+      - all:
+          - { field: callee, one_of: [setreuid, setresuid, setregid, setresgid] }
+          - any:
+              - { field: args.0, number: { op: "=", value: 0 } }
+              - { field: args.1, number: { op: "=", value: 0 } }
+              - { field: args.2, number: { op: "=", value: 0 } }
+  suspected:
+    kind: call
+    field: callee
+    one_of: [chroot, mount, mknod]

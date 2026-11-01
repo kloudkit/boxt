@@ -1,0 +1,15 @@
+schema: "1.0"
+id: eval/co-occurs-nested
+behaviour: b
+title: co-occurs-nested
+fix: Fix co-occurs-nested.
+evidence:
+  found: { id: co-occurs-nested-found, text: Found by co-occurs-nested }
+match:
+  found:
+    kind: call
+    all:
+      - { field: callee, equals: bind }
+      - co_occurs:
+          scope: function
+          all: [ { kind: call, field: callee, equals: socket } ]

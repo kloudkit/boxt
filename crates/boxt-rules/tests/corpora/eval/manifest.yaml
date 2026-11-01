@@ -1,0 +1,5 @@
+corpus_version: 0.0.1
+behaviours:
+  - { id: b, dimension: d }
+  - { id: c, dimension: d }
+dynamic_load_symbols: [dlopen]

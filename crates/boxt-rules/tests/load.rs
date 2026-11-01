@@ -259,8 +259,20 @@ fn match_node_shape_is_checked() {
             unknown("location.column"),
         ),
         (
-            "{ kind: call, field: callee, number: { op: \"<\", value: 3 } }",
-            misfit("callee", FieldType::Text, "number"),
+            "{ kind: include, field: system, number: { op: \"<\", value: 3 } }",
+            misfit("system", FieldType::Bool, "number"),
+        ),
+        (
+            "{ kind: package_file, field: path, number: { op: \"<\", value: 3 } }",
+            misfit("path", FieldType::Path, "number"),
+        ),
+        (
+            "{ kind: call, field: file_kind, number: { op: \"<\", value: 3 } }",
+            misfit("file_kind", FieldType::Text, "number"),
+        ),
+        (
+            "{ kind: call, field: location.scope, number: { op: \"<\", value: 3 } }",
+            misfit("location.scope", FieldType::Text, "number"),
         ),
         (
             "{ kind: call, field: callee, path_under: src }",
@@ -336,11 +348,19 @@ fn every_field_accepts_the_tests_its_type_allows() {
             .chain(COMMON_TEST_FIELDS.iter().map(|(_, n, ty)| (*n, *ty)));
         for (field, ty) in fields {
             let tests: Vec<String> = match ty {
-                FieldType::Text => vec![
-                    format!("field: {field}, equals: x"),
-                    format!("field: {field}, one_of: [x, y]"),
-                    format!("field: {field}, pattern: \"x*\""),
-                ],
+                FieldType::Text => {
+                    let mut tests = vec![
+                        format!("field: {field}, equals: x"),
+                        format!("field: {field}, one_of: [x, y]"),
+                        format!("field: {field}, pattern: \"x*\""),
+                    ];
+                    if !COMMON_TEST_FIELDS.iter().any(|(_, n, _)| *n == field) {
+                        tests.push(format!(
+                            "field: {field}, number: {{ op: \"<\", value: 1024 }}"
+                        ));
+                    }
+                    tests
+                }
                 FieldType::Path => vec![
                     format!("field: {field}, equals: x"),
                     format!("field: {field}, pattern: \"src/*.c\""),
@@ -351,7 +371,10 @@ fn every_field_accepts_the_tests_its_type_allows() {
                     format!("field: {field}, number: {{ op: \">=\", value: 3 }}"),
                 ],
                 FieldType::Bool => vec![format!("field: {field}, equals: true")],
-                FieldType::TextList => vec![format!("field: {field}.0, equals: x")],
+                FieldType::TextList => vec![
+                    format!("field: {field}.0, equals: x"),
+                    format!("field: {field}.0, number: {{ op: \"=\", value: 0 }}"),
+                ],
                 FieldType::Guards => vec!["guard_contains: X".to_owned()],
                 FieldType::Records => vec![],
             };

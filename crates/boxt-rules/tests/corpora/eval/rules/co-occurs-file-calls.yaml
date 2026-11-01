@@ -1,0 +1,14 @@
+schema: "1.0"
+id: eval/co-occurs-file-calls
+behaviour: b
+title: co-occurs-file-calls
+fix: Fix co-occurs-file-calls.
+evidence:
+  found: { id: co-occurs-file-calls-found, text: Found by co-occurs-file-calls }
+match:
+  found:
+    co_occurs:
+      scope: file
+      all:
+        - { kind: call, field: callee, equals: socket }
+        - { kind: call, field: callee, equals: bind }

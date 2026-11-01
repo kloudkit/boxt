@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/equals-text
+behaviour: b
+title: equals-text
+fix: Fix equals-text.
+evidence:
+  found: { id: equals-text-found, text: Found by equals-text }
+match:
+  found:
+    kind: call
+    field: callee
+    equals: setuid

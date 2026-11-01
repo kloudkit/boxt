@@ -1,0 +1,13 @@
+schema: "1.0"
+id: eval/number-text
+behaviour: b
+title: number-text
+fix: Fix number-text.
+evidence:
+  found: { id: number-text-found, text: Found by number-text }
+match:
+  found:
+    kind: call
+    all:
+      - { field: callee, equals: htons }
+      - { field: args.0, number: { op: "<", value: 1024 } }

@@ -1,4 +1,8 @@
-corpus_version: 0.0.0
-behaviours: []
-windows_guard_macros: []
-dynamic_load_symbols: []
+corpus_version: 0.1.0
+behaviours:
+  - { id: needs-root, dimension: identity }
+  - { id: setuid, dimension: identity }
+  - { id: low-port, dimension: network }
+  - { id: registry, dimension: os-coupling }
+windows_guard_macros: [_WIN32, _WIN64, _MSC_VER, __MINGW32__]
+dynamic_load_symbols: [dlopen, dlmopen]

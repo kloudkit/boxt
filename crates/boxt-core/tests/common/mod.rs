@@ -202,7 +202,7 @@ pub fn sample_fact_with(kind: FactKind, filled: bool) -> Fact {
             path: PathText::from("/opt/app/bin/app"),
             mode: filled.then_some(0o104755),
             user: some("root"),
-            group: some("root"),
+            group: some("wheel"),
         },
         FactKind::PackageDependency => Fact::PackageDependency {
             file_kind: FileKind::Package,

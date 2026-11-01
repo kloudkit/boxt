@@ -269,6 +269,31 @@ pub const SCRIPT_NAMES: &[ScriptNameSpec] = &[
 ];
 
 impl ScriptName {
+    pub const fn name(self) -> &'static str {
+        match self {
+            ScriptName::PreTransaction => "pre_transaction",
+            ScriptName::PreInstall => "pre_install",
+            ScriptName::PostInstall => "post_install",
+            ScriptName::PreRemove => "pre_remove",
+            ScriptName::PostRemove => "post_remove",
+            ScriptName::PostTransaction => "post_transaction",
+            ScriptName::PreRemoveTransaction => "pre_remove_transaction",
+            ScriptName::PostRemoveTransaction => "post_remove_transaction",
+            ScriptName::Verify => "verify",
+            ScriptName::TriggerPreInstall => "trigger_pre_install",
+            ScriptName::TriggerInstall => "trigger_install",
+            ScriptName::TriggerRemove => "trigger_remove",
+            ScriptName::TriggerPostRemove => "trigger_post_remove",
+            ScriptName::FileTriggerInstall => "file_trigger_install",
+            ScriptName::FileTriggerRemove => "file_trigger_remove",
+            ScriptName::FileTriggerPostRemove => "file_trigger_post_remove",
+            ScriptName::TransactionFileTriggerInstall => "transaction_file_trigger_install",
+            ScriptName::TransactionFileTriggerRemove => "transaction_file_trigger_remove",
+            ScriptName::TransactionFileTriggerPostRemove => "transaction_file_trigger_post_remove",
+            ScriptName::Config => "config",
+        }
+    }
+
     pub fn from_native(format: FrameKind, native: &[u8]) -> Option<ScriptName> {
         SCRIPT_NAMES
             .iter()

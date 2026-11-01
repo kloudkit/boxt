@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/equals-integer
+behaviour: b
+title: equals-integer
+fix: Fix equals-integer.
+evidence:
+  found: { id: equals-integer-found, text: Found by equals-integer }
+match:
+  found:
+    kind: call
+    field: location.line
+    equals: 4

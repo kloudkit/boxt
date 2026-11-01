@@ -1,0 +1,14 @@
+schema: "1.0"
+id: eval/co-occurs-file
+behaviour: b
+title: co-occurs-file
+fix: Fix co-occurs-file.
+evidence:
+  found: { id: co-occurs-file-found, text: Found by co-occurs-file }
+match:
+  found:
+    co_occurs:
+      scope: file
+      all:
+        - { kind: package_script }
+        - { kind: package_file }

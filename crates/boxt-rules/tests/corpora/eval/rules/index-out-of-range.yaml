@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/index-out-of-range
+behaviour: b
+title: index-out-of-range
+fix: Fix index-out-of-range.
+evidence:
+  found: { id: index-out-of-range-found, text: Found by index-out-of-range }
+match:
+  found:
+    kind: call
+    field: args.3
+    equals: ""

@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/one-of-integer
+behaviour: b
+title: one-of-integer
+fix: Fix one-of-integer.
+evidence:
+  found: { id: one-of-integer-found, text: Found by one-of-integer }
+match:
+  found:
+    kind: call
+    field: location.line
+    one_of: [3, 5]

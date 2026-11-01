@@ -890,7 +890,13 @@ fn field_test(
         )?))
     } else {
         let n = raw.number.take()?;
-        if ty != FieldType::Integer {
+        let common = COMMON_TEST_FIELDS.iter().any(|(_, n, _)| *n == field);
+        let fits = match ty {
+            FieldType::Integer => true,
+            FieldType::Text => !common,
+            _ => false,
+        };
+        if !fits {
             return misfit(sink, "number");
         }
         Some(FieldTest::Number {

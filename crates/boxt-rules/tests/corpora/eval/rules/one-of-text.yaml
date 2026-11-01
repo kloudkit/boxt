@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/one-of-text
+behaviour: b
+title: one-of-text
+fix: Fix one-of-text.
+evidence:
+  found: { id: one-of-text-found, text: Found by one-of-text }
+match:
+  found:
+    kind: call
+    field: callee
+    one_of: [setuid, setgid]

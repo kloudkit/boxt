@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/scope-text
+behaviour: b
+title: scope-text
+fix: Fix scope-text.
+evidence:
+  found: { id: scope-text-found, text: Found by scope-text }
+match:
+  found:
+    field: location.scope
+    kind: service_setting
+    equals: Service.User

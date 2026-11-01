@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/cross-kind-all
+behaviour: b
+title: cross-kind-all
+fix: Fix cross-kind-all.
+evidence:
+  found: { id: cross-kind-all-found, text: Found by cross-kind-all }
+match:
+  found:
+    all:
+      - { kind: call, field: callee, equals: setuid }
+      - { kind: include, field: target, equals: unistd.h }

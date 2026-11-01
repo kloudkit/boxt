@@ -1,0 +1,12 @@
+schema: "1.0"
+id: openshift-restricted-v2
+version: provisional
+controls:
+  - id: run-as-non-root
+    behaviours: [ { behaviour: needs-root, tier: blocked } ]
+  - id: no-privilege-escalation
+    behaviours: [ { behaviour: setuid, tier: blocked } ]
+  - id: unprivileged-ports
+    behaviours: [ { behaviour: low-port, tier: ready_with_config } ]
+  - id: linux-runtime
+    behaviours: [ { behaviour: registry, tier: needs_windows } ]
