@@ -50,6 +50,7 @@ pub(crate) fn verdict(profile: &Profile, findings: &SortedVec<Finding>) -> Targe
     let mut with_suspected = Tier::Ready;
     let mut found = 0u64;
     let mut suspected = 0u64;
+    let mut allowed = 0u64;
     let mut unmapped = Vec::new();
     for finding in findings.iter() {
         let Some(t) = tier(profile, &finding.behaviour) else {
@@ -59,13 +60,15 @@ pub(crate) fn verdict(profile: &Profile, findings: &SortedVec<Finding>) -> Targe
             continue;
         };
         with_suspected = with_suspected.worst(t);
-        match finding.confidence {
-            Confidence::Found => {
-                found_tier = found_tier.worst(t);
-                found = found.saturating_add(1);
-            }
-            Confidence::Suspected => suspected = suspected.saturating_add(1),
+        if finding.confidence == Confidence::Found {
+            found_tier = found_tier.worst(t);
         }
+        let count = match (t, finding.confidence) {
+            (Tier::Ready, _) => &mut allowed,
+            (_, Confidence::Found) => &mut found,
+            (_, Confidence::Suspected) => &mut suspected,
+        };
+        *count = count.saturating_add(1);
     }
     TargetVerdict {
         target: profile.id.clone(),
@@ -75,6 +78,7 @@ pub(crate) fn verdict(profile: &Profile, findings: &SortedVec<Finding>) -> Targe
         },
         found,
         suspected,
+        allowed,
         unmapped: unmapped.into(),
     }
 }

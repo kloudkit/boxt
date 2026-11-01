@@ -7,7 +7,7 @@ use crate::identity::FindingId;
 use crate::input_scope::InputScope;
 use crate::location::Location;
 use crate::message::RegionReason;
-use crate::outcome::{Outcome, Sm3, VerdictCounts};
+use crate::outcome::{FileOutcome, NotCheckedReason, Outcome, Sm3, VerdictCounts};
 use crate::sorted::SortedVec;
 use crate::text::Text;
 use crate::version::Versions;
@@ -319,6 +319,7 @@ pub struct TargetVerdict {
     pub range: TierRange,
     pub found: u64,
     pub suspected: u64,
+    pub allowed: u64,
     pub unmapped: SortedVec<BehaviourId>,
 }
 
@@ -382,6 +383,12 @@ impl From<ReportedFinding> for RawReportedFinding {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LineRange {
+    pub first: u32,
+    pub last: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotCheckedEntry {
@@ -389,16 +396,48 @@ pub enum NotCheckedEntry {
         location: Location,
         outcome: Outcome,
     },
-    Region {
+    Regions {
         location: Location,
-        first_line: u32,
-        last_line: u32,
         reason: RegionReason,
+        ranges: Vec<LineRange>,
     },
     DynamicLoad {
         location: Location,
         symbol: Text,
     },
+}
+
+impl NotCheckedEntry {
+    pub fn is_no_reader(&self) -> bool {
+        matches!(
+            self,
+            NotCheckedEntry::File { outcome, .. } if matches!(
+                outcome.file,
+                FileOutcome::NotChecked { reason: NotCheckedReason::NoReader, .. }
+            )
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupKey {
+    Behaviour(BehaviourId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RuleSection {
+    pub rule: RuleId,
+    pub fix: String,
+    pub findings: Vec<FindingId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Group {
+    pub key: GroupKey,
+    pub found: u64,
+    pub suspected: u64,
+    pub rules: Vec<RuleSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -412,7 +451,9 @@ pub struct Result {
     pub host_dependent: bool,
     pub targets: SortedVec<TargetVerdict>,
     pub findings: SortedVec<ReportedFinding>,
+    pub groups: Vec<Group>,
     pub not_checked: SortedVec<NotCheckedEntry>,
+    pub no_reader: u64,
     pub observations: SortedVec<Observation>,
 }
 

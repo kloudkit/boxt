@@ -1,7 +1,7 @@
 use boxt_core::SortedVec;
 use boxt_core::message::CollectedFile;
 use boxt_core::outcome::FileOutcome;
-use boxt_core::verdict::{NotCheckedEntry, Observation};
+use boxt_core::verdict::{LineRange, NotCheckedEntry, Observation};
 
 pub(crate) fn entries(
     files: &SortedVec<CollectedFile>,
@@ -17,12 +17,25 @@ pub(crate) fn entries(
                 });
             }
             FileOutcome::Read => {
-                for region in &file.regions {
-                    out.push(NotCheckedEntry::Region {
+                let mut regions: Vec<_> = file
+                    .regions
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.reason,
+                            LineRange {
+                                first: r.first_line,
+                                last: r.last_line,
+                            },
+                        )
+                    })
+                    .collect();
+                regions.sort();
+                for chunk in regions.chunk_by(|a, b| a.0 == b.0) {
+                    out.push(NotCheckedEntry::Regions {
                         location: file.location.clone(),
-                        first_line: region.first_line,
-                        last_line: region.last_line,
-                        reason: region.reason,
+                        reason: chunk[0].0,
+                        ranges: chunk.iter().map(|(_, range)| *range).collect(),
                     });
                 }
             }
@@ -38,4 +51,11 @@ pub(crate) fn entries(
         }
     }
     out.into()
+}
+
+pub(crate) fn no_reader(entries: &SortedVec<NotCheckedEntry>) -> u64 {
+    entries
+        .iter()
+        .filter(|e| e.is_no_reader())
+        .fold(0u64, |n, _| n.saturating_add(1))
 }

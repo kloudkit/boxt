@@ -34,9 +34,9 @@ use boxt_core::read::{
 use boxt_core::settings::{CompileDatabaseSetting, Encoding, Settings, WorkerSettings};
 use boxt_core::shell::{self, is_shell_interpreter};
 use boxt_core::verdict::{
-    BehaviourId, Confidence, CoverageError, Evidence, EvidenceId, Finding, NotCheckedEntry,
-    Observation, ReportedFinding, Result as VerdictResult, RuleCoverage, RuleId, TargetId,
-    TargetVerdict, Tier, TierRange,
+    BehaviourId, Confidence, CoverageError, Evidence, EvidenceId, Finding, Group, GroupKey,
+    LineRange, NotCheckedEntry, Observation, ReportedFinding, Result as VerdictResult,
+    RuleCoverage, RuleId, RuleSection, TargetId, TargetVerdict, Tier, TierRange,
 };
 use boxt_core::version::{RULE_SCHEMA_VERSION, SchemaVersion, Versions};
 
@@ -1332,6 +1332,7 @@ fn sample_result() -> VerdictResult {
             },
             found: 1,
             suspected: 0,
+            allowed: 2,
             unmapped: vec![BehaviourId::new("odd").unwrap()].into(),
         }]
         .into(),
@@ -1340,16 +1341,44 @@ fn sample_result() -> VerdictResult {
             id: FindingId::parse("0123456789ab-1").unwrap(),
         }]
         .into(),
+        groups: vec![Group {
+            key: GroupKey::Behaviour(BehaviourId::new("bind").unwrap()),
+            found: 1,
+            suspected: 0,
+            rules: vec![RuleSection {
+                rule: RuleId::new("net/bind").unwrap(),
+                fix: "fix".to_owned(),
+                findings: vec![FindingId::parse("0123456789ab-1").unwrap()],
+            }],
+        }],
         not_checked: vec![
             NotCheckedEntry::File {
                 location: at("broken.c", None),
                 outcome,
             },
-            NotCheckedEntry::Region {
+            NotCheckedEntry::File {
+                location: at("notes.txt", None),
+                outcome: Outcome::new(
+                    FileOutcome::NotChecked {
+                        reason: NotCheckedReason::NoReader,
+                        details: Details::None,
+                    },
+                    None,
+                ),
+            },
+            NotCheckedEntry::Regions {
                 location: at("partly.c", None),
-                first_line: 10,
-                last_line: 20,
                 reason: RegionReason::Unparseable,
+                ranges: vec![
+                    LineRange {
+                        first: 10,
+                        last: 20,
+                    },
+                    LineRange {
+                        first: 41,
+                        last: 41,
+                    },
+                ],
             },
             NotCheckedEntry::DynamicLoad {
                 location: at("app", None),
@@ -1357,6 +1386,7 @@ fn sample_result() -> VerdictResult {
             },
         ]
         .into(),
+        no_reader: 1,
         observations: vec![Observation::DynamicLoad {
             location: at("app", None),
             symbol: Text::from("dlopen"),

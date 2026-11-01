@@ -8,4 +8,6 @@ publish.workspace = true
 
 [dependencies]
 anstyle.workspace = true
+textwrap.workspace = true
+unicode-width.workspace = true
 boxt-core = { path = "../boxt-core" }

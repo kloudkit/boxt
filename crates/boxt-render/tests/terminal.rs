@@ -10,12 +10,44 @@ use boxt_render::boxt_core::outcome::{
     VerdictCounts,
 };
 use boxt_render::boxt_core::verdict::{
-    BehaviourId, Confidence, Evidence, EvidenceId, Finding, NotCheckedEntry, ReportedFinding,
-    Result, RuleId, TargetId, TargetVerdict, Tier, TierRange,
+    BehaviourId, Confidence, Evidence, EvidenceId, Finding, Group, GroupKey, LineRange,
+    NotCheckedEntry, ReportedFinding, Result, RuleId, RuleSection, TargetId, TargetVerdict, Tier,
+    TierRange,
 };
 use boxt_render::boxt_core::version::Versions;
 use boxt_render::boxt_core::{SortedVec, Text};
-use boxt_render::terminal;
+use boxt_render::{TerminalOptions, terminal as render};
+use unicode_width::UnicodeWidthStr;
+
+fn terminal(result: &Result, styled: bool) -> String {
+    render(
+        result,
+        &TerminalOptions {
+            styled,
+            width: 80,
+            all: false,
+        },
+    )
+}
+
+fn at_width(result: &Result, width: usize, all: bool) -> String {
+    render(
+        result,
+        &TerminalOptions {
+            styled: false,
+            width,
+            all,
+        },
+    )
+}
+
+fn widest(report: &str) -> usize {
+    report
+        .lines()
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0)
+}
 
 fn loc(path: &str, line: Option<u32>, scope: Scope) -> Location {
     Location {
@@ -96,6 +128,7 @@ fn sample(host_dependent: bool) -> Result {
                 },
                 found: 1,
                 suspected: 0,
+                allowed: 0,
                 unmapped: SortedVec::new(),
             },
             TargetVerdict {
@@ -106,6 +139,7 @@ fn sample(host_dependent: bool) -> Result {
                 },
                 found: 1,
                 suspected: 0,
+                allowed: 0,
                 unmapped: [BehaviourId::new("user/foo").unwrap()]
                     .into_iter()
                     .collect(),
@@ -119,6 +153,16 @@ fn sample(host_dependent: bool) -> Result {
         }]
         .into_iter()
         .collect(),
+        groups: vec![Group {
+            key: GroupKey::Behaviour(BehaviourId::new("setuid").unwrap()),
+            found: 1,
+            suspected: 0,
+            rules: vec![RuleSection {
+                rule: RuleId::new("identity/setuid").unwrap(),
+                fix: "Start as the user.".to_owned(),
+                findings: vec![FindingId::parse("9c1e00000000-1").unwrap()],
+            }],
+        }],
         not_checked: [
             NotCheckedEntry::File {
                 location: loc("broken.c", None, Scope::File),
@@ -130,11 +174,13 @@ fn sample(host_dependent: bool) -> Result {
                     None,
                 ),
             },
-            NotCheckedEntry::Region {
+            NotCheckedEntry::Regions {
                 location: loc("partly.c", None, Scope::File),
-                first_line: 10,
-                last_line: 20,
                 reason: RegionReason::Unparseable,
+                ranges: vec![LineRange {
+                    first: 10,
+                    last: 20,
+                }],
             },
             NotCheckedEntry::DynamicLoad {
                 location: packaged,
@@ -143,6 +189,7 @@ fn sample(host_dependent: bool) -> Result {
         ]
         .into_iter()
         .collect(),
+        no_reader: 0,
         observations: SortedVec::new(),
     }
 }
@@ -157,18 +204,21 @@ fn position(report: &str, needle: &str) -> usize {
 fn sections_come_in_order() {
     let report = terminal(&sample(true), false);
     let order = [
-        "Source only: results describe the code",
-        labels::HOST_DEPENDENT_TEXT,
-        "docker-default  needs Windows  (1 found, 0 suspected)  5 files read, 2 not checked",
-        "kubernetes-restricted  needs code change … blocked  (1 found, 0 suspected)",
-        "\nFindings\n",
-        "  9c1e00000000-1  identity/setuid  setuid  found  (id-change-call)",
-        "      guard: #ifdef _WIN32",
-        "      fix: Start as the user.",
+        "│ Source only: results describe the code",
+        "│ Some files were ended by a time or memory limit of this host;",
+        "\n┌ docker-default ───",
+        "│ [needs Windows]  1 found ",
+        "│ 5 files read · 2 not checked · 0.8% of source lines not checked ",
+        "\n┌ kubernetes-restricted ───",
+        "│ [needs code change … blocked]  1 found ",
+        "\nsetuid  1 found\n  identity/setuid\n    fix  Start as the user.\n",
+        "    ● ev\\u{202e}il\\x09\\u{200b}.c:7  in ",
+        "      uid_t)  id-change-call  9c1e00000000-1\n",
+        "        guard #ifdef _WIN32\n",
         "\nNot checked\n",
         "  kubernetes-restricted: unmapped behaviour user/foo",
         "  broken.c: unparseable",
-        "  partly.c lines 10–20: unparseable region",
+        "  partly.c: unparseable region at lines 10–20",
         "  app!bin/x: loads code at run time through dlopen",
         "  Source lines not checked: 0.8% (3 of 412); files: 2 of 5",
     ];
@@ -178,12 +228,27 @@ fn sections_come_in_order() {
         assert!(at >= last, "{needle:?} out of order in\n{report}");
         last = at;
     }
-    assert!(report.starts_with(&sample(true).input_scope_text));
+    assert!(report.starts_with("┌──"), "{report}");
+}
+
+#[test]
+fn the_header_box_comes_first_and_holds_the_warning() {
+    let report = terminal(&sample(false), false);
+    let lines = lines_of(&report);
+    assert_eq!(lines[0], format!("┌{}┐", "─".repeat(78)));
+    assert!(
+        lines[1].starts_with("│ Source only: results describe the code, not the built program."),
+        "{report}"
+    );
+    assert_eq!(lines[1].width(), 80);
+    assert_eq!(lines[3], format!("└{}┘", "─".repeat(78)));
 }
 
 #[test]
 fn the_host_note_shows_only_when_host_dependent() {
-    assert!(!terminal(&sample(false), false).contains(labels::HOST_DEPENDENT_TEXT));
+    let marker = "Some files were ended by a time or memory limit";
+    assert!(terminal(&sample(true), false).contains(marker));
+    assert!(!terminal(&sample(false), false).contains(marker));
 }
 
 #[test]
@@ -198,10 +263,32 @@ fn every_tier_prints_its_label() {
         result.targets = targets.into_iter().collect();
         let report = terminal(&result, false);
         assert!(
-            report.contains(&format!("docker-default  {}  (", labels::tier(tier))),
+            report.contains(&format!("│ [{}]  1 found ", labels::tier(tier))),
             "{report}"
         );
+        let styled = terminal(&result, true);
+        assert!(
+            styled.contains(&format!(" {} \x1b[0m", labels::tier(tier).to_uppercase())),
+            "{styled}"
+        );
     }
+}
+
+#[test]
+fn a_range_prints_both_tiers_in_one_badge() {
+    let report = terminal(&sample(false), false);
+    assert!(
+        report.contains("│ [needs code change … blocked]  "),
+        "{report}"
+    );
+    let mut result = sample(false);
+    let mut targets = result.targets.into_vec();
+    targets[0].range = TierRange {
+        found: Tier::Blocked,
+        with_suspected: Tier::Blocked,
+    };
+    result.targets = targets.into_iter().collect();
+    assert!(terminal(&result, false).contains("│ [blocked]  1 found"));
 }
 
 #[test]
@@ -209,7 +296,7 @@ fn hostile_names_are_escaped() {
     let report = terminal(&sample(false), false);
     assert!(
         report.contains(
-            "ev\\u{202e}il\\x09\\u{200b}.c:7  in drop\\u{202e}\\u{200b}_to(const char *, uid_t)"
+            "    ● ev\\u{202e}il\\x09\\u{200b}.c:7  in drop\\u{202e}\\u{200b}_to(const char *, \n      uid_t)"
         ),
         "{report}"
     );
@@ -259,6 +346,27 @@ fn a_lower_bound_share_says_at_least() {
     let report = terminal(&result, false);
     assert!(
         report.contains("Source lines not checked: at least 0 of 0, 2 files uncounted; files: n/a"),
+        "{report}"
+    );
+    assert!(
+        report
+            .contains("│ 5 files read · 2 not checked · at least 0 of 0 source lines not checked "),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_missing_line_share_says_n_a() {
+    let mut result = sample(false);
+    result.sm3.lines = None;
+    result.sm3.files = None;
+    let report = terminal(&result, false);
+    assert!(
+        report.contains("│ 5 files read · 2 not checked · source lines not checked: n/a "),
+        "{report}"
+    );
+    assert!(
+        report.contains("  Source lines not checked: n/a; files: n/a\n"),
         "{report}"
     );
 }
@@ -334,6 +442,7 @@ fn details_aggregates_and_host_marks_print_their_lines() {
 fn empty_sections_print_none() {
     let mut result = sample(false);
     result.findings = SortedVec::new();
+    result.groups = Vec::new();
     result.not_checked = SortedVec::new();
     let mut targets = result.targets.into_vec();
     for t in &mut targets {
@@ -341,7 +450,10 @@ fn empty_sections_print_none() {
     }
     result.targets = targets.into_iter().collect();
     let report = terminal(&result, false);
-    assert!(report.contains("\nFindings\n  none\n"), "{report}");
+    assert!(
+        report.contains("\n\nFindings\n  none\n\nNot checked\n"),
+        "{report}"
+    );
     assert!(
         report.contains("\nNot checked\n  none\n  Source lines not checked: "),
         "{report}"
@@ -450,4 +562,799 @@ fn cut_macro_tables_and_uncounted_files_are_listed() {
     }
     let sm3 = report.find("Source lines not checked").unwrap();
     assert!(report.find("    uncounted: ").unwrap() > sm3);
+}
+
+struct Seeded {
+    path: &'static str,
+    line: u32,
+    function: &'static str,
+    signature: &'static str,
+    rule: &'static str,
+    confidence: Confidence,
+    evidence: &'static str,
+    guarded: bool,
+    id: &'static str,
+}
+
+const NEEDS_ROOT_FIX: &str =
+    "Run as a non-root user; drop the switch to user or group 0 and the calls that need root.";
+const SETUID_FIX: &str =
+    "Start as the user and groups the program needs, and drop the id-changing calls.";
+const LOW_PORT_FIX: &str =
+    "Listen on a port at or above 1024 and map it to the low port in the container runtime.";
+const REGISTRY_FIX: &str =
+    "Read the setting from a configuration file or the environment instead of the registry.";
+
+fn seeded(s: &Seeded) -> ReportedFinding {
+    let rule = RuleId::new(s.rule).unwrap();
+    let behaviour = s.rule.split('/').nth(1).unwrap();
+    let fix = match behaviour {
+        "needs-root" => NEEDS_ROOT_FIX,
+        "setuid" => SETUID_FIX,
+        "low-port" => LOW_PORT_FIX,
+        _ => REGISTRY_FIX,
+    };
+    let guards = if s.guarded {
+        vec![GuardChain {
+            frames: vec![GuardFrame {
+                directive: Directive::Ifdef,
+                text: Text::from("#ifdef _WIN32"),
+                identifiers: [Text::from("_WIN32")].into_iter().collect(),
+                holds_code: true,
+            }],
+            has_alternative: false,
+            region: RegionId(0),
+        }]
+    } else {
+        Vec::new()
+    };
+    ReportedFinding {
+        finding: Finding {
+            location: loc(
+                s.path,
+                Some(s.line),
+                Scope::Function {
+                    qualified_name: Text::from(s.function),
+                    signature: Text::from(s.signature),
+                },
+            ),
+            rule,
+            behaviour: BehaviourId::new(behaviour).unwrap(),
+            confidence: s.confidence,
+            evidence: Evidence {
+                definition: EvidenceId::new(s.evidence).unwrap(),
+            },
+            guards,
+            fix: fix.to_owned(),
+        },
+        id: FindingId::parse(s.id).unwrap(),
+    }
+}
+
+fn group(behaviour: &str, found: u64, suspected: u64, sections: &[(&str, &[&str])]) -> Group {
+    Group {
+        key: GroupKey::Behaviour(BehaviourId::new(behaviour).unwrap()),
+        found,
+        suspected,
+        rules: sections
+            .iter()
+            .map(|(rule, ids)| RuleSection {
+                rule: RuleId::new(*rule).unwrap(),
+                fix: match behaviour {
+                    "needs-root" => NEEDS_ROOT_FIX,
+                    "setuid" => SETUID_FIX,
+                    "low-port" => LOW_PORT_FIX,
+                    _ => REGISTRY_FIX,
+                }
+                .to_owned(),
+                findings: ids.iter().map(|id| FindingId::parse(id).unwrap()).collect(),
+            })
+            .collect(),
+    }
+}
+
+fn seed_shaped() -> Result {
+    let found = Confidence::Found;
+    let rows = [
+        Seeded {
+            path: "low-port.c",
+            line: 11,
+            function: "listen_http",
+            signature: "(void)",
+            rule: "network/low-port",
+            confidence: found,
+            evidence: "htons-low-literal",
+            guarded: false,
+            id: "8cd6bfbb1cd6-1",
+        },
+        Seeded {
+            path: "needs-root.c",
+            line: 6,
+            function: "become_root",
+            signature: "(void)",
+            rule: "identity/needs-root",
+            confidence: found,
+            evidence: "switch-to-root",
+            guarded: false,
+            id: "22f82d5b8473-1",
+        },
+        Seeded {
+            path: "needs-root.c",
+            line: 6,
+            function: "become_root",
+            signature: "(void)",
+            rule: "identity/setuid",
+            confidence: found,
+            evidence: "id-change-call",
+            guarded: false,
+            id: "600ca31d27d3-1",
+        },
+        Seeded {
+            path: "needs-root.c",
+            line: 8,
+            function: "become_root",
+            signature: "(void)",
+            rule: "identity/needs-root",
+            confidence: Confidence::Suspected,
+            evidence: "root-only-call",
+            guarded: false,
+            id: "22f82d5b8473-2",
+        },
+        Seeded {
+            path: "needs-root.c",
+            line: 13,
+            function: "become_root_fully",
+            signature: "(void)",
+            rule: "identity/needs-root",
+            confidence: found,
+            evidence: "switch-to-root",
+            guarded: false,
+            id: "67658c4225d3-1",
+        },
+        Seeded {
+            path: "registry.c",
+            line: 8,
+            function: "read_setting",
+            signature: "(DWORD *)",
+            rule: "os-coupling/registry",
+            confidence: found,
+            evidence: "registry-call",
+            guarded: true,
+            id: "a932e98472ec-1",
+        },
+        Seeded {
+            path: "registry.c",
+            line: 10,
+            function: "read_setting",
+            signature: "(DWORD *)",
+            rule: "os-coupling/registry",
+            confidence: found,
+            evidence: "registry-call",
+            guarded: true,
+            id: "a932e98472ec-2",
+        },
+        Seeded {
+            path: "setuid.c",
+            line: 7,
+            function: "drop_to",
+            signature: "(const char *, uid_t, gid_t)",
+            rule: "identity/setuid",
+            confidence: found,
+            evidence: "id-change-call",
+            guarded: false,
+            id: "bdb745a285af-1",
+        },
+    ];
+    let mut result = sample(false);
+    result.findings = rows.iter().map(seeded).collect();
+    result.groups = vec![
+        group(
+            "low-port",
+            1,
+            0,
+            &[("network/low-port", &["8cd6bfbb1cd6-1"])],
+        ),
+        group(
+            "needs-root",
+            2,
+            1,
+            &[(
+                "identity/needs-root",
+                &["22f82d5b8473-1", "22f82d5b8473-2", "67658c4225d3-1"],
+            )],
+        ),
+        group(
+            "registry",
+            2,
+            0,
+            &[(
+                "os-coupling/registry",
+                &["a932e98472ec-1", "a932e98472ec-2"],
+            )],
+        ),
+        group(
+            "setuid",
+            2,
+            0,
+            &[("identity/setuid", &["600ca31d27d3-1", "bdb745a285af-1"])],
+        ),
+    ];
+    result.targets = [TargetVerdict {
+        target: TargetId::new("kubernetes-restricted").unwrap(),
+        range: TierRange {
+            found: Tier::Blocked,
+            with_suspected: Tier::Blocked,
+        },
+        found: 7,
+        suspected: 1,
+        allowed: 0,
+        unmapped: SortedVec::new(),
+    }]
+    .into_iter()
+    .collect();
+    result.counts = VerdictCounts {
+        read: 5,
+        not_checked: Count::Exact(0),
+    };
+    result.sm3 = Sm3 {
+        lines: Some(LineShare {
+            numerator: 0,
+            denominator: 72,
+            uncounted_files: 0,
+            incomplete_files: 0,
+        }),
+        files: Some(FileShare {
+            numerator: 0,
+            denominator: 5,
+        }),
+        uncounted: SortedVec::new(),
+        incomplete: SortedVec::new(),
+    };
+    result.not_checked = SortedVec::new();
+    result
+}
+
+const SEED_GOLDEN: &str = r#"
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Source only: results describe the code, not the built program. Add binaries  │
+│ or packages for a richer result.                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌ kubernetes-restricted ───────────────────────────────────────────────────────┐
+│ [blocked]  7 found · 1 suspected                                             │
+│ 5 files read · 0 not checked · 0.0% of source lines not checked              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Findings
+  ● found  ○ suspected
+
+low-port  1 found
+  network/low-port
+    fix  Listen on a port at or above 1024 and map it to the low port in the
+         container runtime.
+    ● low-port.c:11  in listen_http(void)  htons-low-literal  8cd6bfbb1cd6-1
+
+needs-root  2 found · 1 suspected
+  identity/needs-root
+    fix  Run as a non-root user; drop the switch to user or group 0 and the
+         calls that need root.
+    ● needs-root.c:6  in become_root(void)  switch-to-root  22f82d5b8473-1
+    ○ needs-root.c:8  in become_root(void)  root-only-call  22f82d5b8473-2
+    ● needs-root.c:13  in become_root_fully(void)  switch-to-root
+      67658c4225d3-1
+
+registry  2 found
+  os-coupling/registry
+    fix  Read the setting from a configuration file or the environment instead
+         of the registry.
+    ● registry.c:8  in read_setting(DWORD *)  registry-call  a932e98472ec-1
+        guard #ifdef _WIN32
+    ● registry.c:10  in read_setting(DWORD *)  registry-call  a932e98472ec-2
+        guard #ifdef _WIN32
+
+setuid  2 found
+  identity/setuid
+    fix  Start as the user and groups the program needs, and drop the
+         id-changing calls.
+    ● needs-root.c:6  in become_root(void)  id-change-call  600ca31d27d3-1
+    ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)  id-change-call
+      bdb745a285af-1
+
+Not checked
+  none
+  Source lines not checked: 0.0% (0 of 72); files: 0 of 5
+"#;
+
+#[test]
+fn the_seed_shaped_result_prints_the_golden_layout_at_80_columns() {
+    let report = terminal(&seed_shaped(), false);
+    assert_eq!(report, SEED_GOLDEN.strip_prefix('\n').unwrap(), "{report}");
+    assert_eq!(widest(&report), 80);
+    for fix in [NEEDS_ROOT_FIX, SETUID_FIX, LOW_PORT_FIX, REGISTRY_FIX] {
+        let start = &fix[..20];
+        assert_eq!(report.matches(start).count(), 1, "{start}");
+    }
+}
+
+#[test]
+fn two_rules_of_one_behaviour_print_each_fix_once() {
+    let mut result = seed_shaped();
+    let mut user = seeded(&Seeded {
+        path: "setuid.c",
+        line: 9,
+        function: "drop_to",
+        signature: "(const char *, uid_t, gid_t)",
+        rule: "identity/setuid",
+        confidence: Confidence::Suspected,
+        evidence: "id-change-call",
+        guarded: false,
+        id: "bdb745a285af-2",
+    });
+    user.finding.rule = RuleId::new("user/setuid-x").unwrap();
+    "Ask the site team.".clone_into(&mut user.finding.fix);
+    result.findings.insert(user);
+    let mut setuid = group(
+        "setuid",
+        2,
+        1,
+        &[("identity/setuid", &["600ca31d27d3-1", "bdb745a285af-1"])],
+    );
+    setuid.rules.push(RuleSection {
+        rule: RuleId::new("user/setuid-x").unwrap(),
+        fix: "Ask the site team.".to_owned(),
+        findings: vec![FindingId::parse("bdb745a285af-2").unwrap()],
+    });
+    result.groups[3] = setuid;
+    let report = terminal(&result, false);
+    let tail = &report[position(&report, "\nsetuid  2 found · 1 suspected\n")..];
+    let expected = "
+setuid  2 found · 1 suspected
+  identity/setuid
+    fix  Start as the user and groups the program needs, and drop the
+         id-changing calls.
+    ● needs-root.c:6  in become_root(void)  id-change-call  600ca31d27d3-1
+    ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)  id-change-call
+      bdb745a285af-1
+  user/setuid-x
+    fix  Ask the site team.
+    ○ setuid.c:9  in drop_to(const char *, uid_t, gid_t)  id-change-call
+      bdb745a285af-2
+";
+    assert!(tail.starts_with(expected), "{report}");
+    assert_eq!(report.matches("Ask the site team.").count(), 1);
+    assert_eq!(report.matches("Start as the user and groups").count(), 1);
+}
+
+#[test]
+fn a_long_signature_wraps_with_a_hanging_indent() {
+    let mut result = sample(false);
+    let mut findings = result.findings.into_vec();
+    findings[0].finding.location.path = Some(RelPath::try_from("misc.c").unwrap());
+    findings[0].finding.location.scope = Scope::Function {
+        qualified_name: Text::from("subprocess"),
+        signature: Text::from(
+            "(const char *, const char *, int, char **, FILE **, u_int, struct passwd *, privdrop_fn *, privrestore_fn *)",
+        ),
+    };
+    result.findings = findings.into_iter().collect();
+    let report = terminal(&result, false);
+    assert!(widest(&report) <= 80, "{report}");
+    let expected = "
+    ● misc.c:7  in subprocess(const char *, const char *, int, char **,\x20
+      FILE **, u_int, struct passwd *, privdrop_fn *, privrestore_fn *)
+      id-change-call  9c1e00000000-1
+        guard #ifdef _WIN32
+";
+    assert!(report.contains(expected), "{report}");
+}
+
+#[test]
+fn a_long_guard_and_fix_wrap_under_their_label() {
+    let mut result = sample(false);
+    let mut findings = result.findings.into_vec();
+    findings[0].finding.guards[0].frames[0].text = Text::from(
+        "#if defined(HAVE_SETRESUID) && !defined(BROKEN_SETRESUID) && defined(HAVE_SETRESGID) && !defined(BROKEN_SETRESGID)",
+    );
+    result.findings = findings.into_iter().collect();
+    result.groups[0].rules[0].fix = "word ".repeat(30);
+    let report = terminal(&result, false);
+    assert!(widest(&report) <= 80, "{report}");
+    let lines = lines_of(&report);
+    let guard = lines
+        .iter()
+        .position(|l| l.starts_with("        guard #if defined(HAVE_SETRESUID)"))
+        .unwrap();
+    assert!(
+        lines[guard + 1].starts_with("              defined("),
+        "{report}"
+    );
+    let fix = lines
+        .iter()
+        .position(|l| l.starts_with("    fix  word"))
+        .unwrap();
+    assert!(lines[fix + 1].starts_with("         word"), "{report}");
+}
+
+#[test]
+fn wide_characters_are_measured_by_display_width() {
+    let mut result = sample(false);
+    let wide = "源代码/很长的目录名称/另一个很长的目录名称/文件名称很长的源代码文件e\u{301}.c";
+    let mut findings = result.findings.into_vec();
+    findings[0].finding.location.path = Some(RelPath::try_from(wide).unwrap());
+    result.findings = findings.into_iter().collect();
+    result.not_checked = [not_checked(
+        loc(wide, None, Scope::File),
+        FileOutcome::NotChecked {
+            reason: NotCheckedReason::Unparseable,
+            details: Details::None,
+        },
+        false,
+    )]
+    .into_iter()
+    .collect();
+    for width in [60, 80] {
+        let report = at_width(&result, width, false);
+        for line in report.lines() {
+            assert!(line.width() <= width, "{line:?} over {width} in\n{report}");
+            if line.starts_with(['┌', '│', '└']) {
+                assert_eq!(line.width(), width, "{line:?}");
+            }
+        }
+        assert!(report.contains("文件e\u{301}.c"), "{report}");
+    }
+    let report = terminal(&result, false);
+    assert!(
+        report.contains(&format!("\n    ● {wide}:7\n      in drop")),
+        "{report}"
+    );
+    assert_eq!(format!("    ● {wide}:7").width(), 78);
+}
+
+#[test]
+fn hostile_text_is_escaped_before_it_is_measured_and_wrapped() {
+    let mut result = sample(false);
+    let hostile = format!("{}\x1b[31m\u{202e}.c", "x".repeat(70));
+    let mut findings = result.findings.into_vec();
+    findings[0].finding.location.path = Some(RelPath::try_from(hostile.as_str()).unwrap());
+    result.findings = findings.into_iter().collect();
+    for styled in [false, true] {
+        let report = render(
+            &result,
+            &TerminalOptions {
+                styled,
+                width: 60,
+                all: false,
+            },
+        );
+        assert!(!report.contains('\u{202e}'));
+        assert!(!report.contains("\x1b[31m"));
+        let plain = String::from_utf8(strip_sgr(report.as_bytes())).unwrap();
+        assert!(widest(&plain) <= 60, "{plain}");
+        let joined: String = plain.lines().map(str::trim).collect();
+        assert!(
+            joined.contains(&format!("{}\\x1b[31m\\u{{202e}}.c:7", "x".repeat(70))),
+            "{plain}"
+        );
+    }
+}
+
+fn no_reader_run(no_reader: usize) -> Result {
+    let mut result = sample(false);
+    let mut entries: Vec<NotCheckedEntry> = (0..no_reader)
+        .map(|i| {
+            not_checked(
+                loc(&format!("doc/file-{i:04}.txt"), None, Scope::File),
+                FileOutcome::NotChecked {
+                    reason: NotCheckedReason::NoReader,
+                    details: Details::None,
+                },
+                false,
+            )
+        })
+        .collect();
+    for path in ["a.c", "m.c", "z.c"] {
+        entries.push(not_checked(
+            loc(path, None, Scope::File),
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::Unparseable,
+                details: Details::None,
+            },
+            false,
+        ));
+    }
+    result.not_checked = entries.into_iter().collect();
+    result.no_reader = no_reader as u64;
+    result
+}
+
+#[test]
+fn files_no_reader_understands_print_as_one_count() {
+    let result = no_reader_run(2000);
+    let report = terminal(&result, false);
+    let lines = lines_of(&report);
+    let at = lines.iter().position(|l| *l == "Not checked").unwrap();
+    assert_eq!(
+        &lines[at + 1..at + 5],
+        [
+            "  kubernetes-restricted: unmapped behaviour user/foo",
+            "  no reader: 2000 files (--all to list)",
+            "  a.c: unparseable",
+            "  m.c: unparseable",
+        ]
+    );
+    assert!(lines.contains(&"  z.c: unparseable"));
+    assert!(!report.contains("file-0000.txt"));
+    assert_eq!(report.matches(": no reader").count(), 0);
+}
+
+#[test]
+fn all_lists_every_file_no_reader_understands() {
+    let result = no_reader_run(2000);
+    let report = at_width(&result, 80, true);
+    assert!(!report.contains("(--all to list)"));
+    assert_eq!(report.matches(": no reader\n").count(), 2000);
+    assert_eq!(report.matches(": unparseable\n").count(), 3);
+    assert!(report.contains("\n  doc/file-1999.txt: no reader\n"));
+}
+
+#[test]
+fn with_no_count_the_entries_are_listed_as_before() {
+    let mut result = no_reader_run(2);
+    result.no_reader = 0;
+    let report = terminal(&result, false);
+    assert!(!report.contains("(--all to list)"));
+    assert_eq!(report.matches(": no reader\n").count(), 2);
+}
+
+#[test]
+fn the_width_is_clamped_to_60_and_200() {
+    for (asked, laid_out) in [(40, 60), (0, 60), (60, 60), (123, 123), (500, 200)] {
+        let report = at_width(&sample(true), asked, false);
+        assert_eq!(report.lines().next().unwrap().width(), laid_out, "{asked}");
+        assert!(widest(&report) <= laid_out, "{asked}\n{report}");
+    }
+}
+
+#[test]
+fn every_line_of_the_seed_fits_at_the_narrowest_width() {
+    let report = at_width(&seed_shaped(), 60, false);
+    for line in report.lines() {
+        assert!(line.width() <= 60, "{line:?}");
+    }
+    assert!(
+        report.contains("│ [blocked]  7 found · 1 suspected "),
+        "{report}"
+    );
+}
+
+fn strip_sgr(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+            i += 2;
+            while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            i += 1;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
+fn a_style_never_spans_a_line_break() {
+    let mut result = seed_shaped();
+    let mut targets = result.targets.into_vec();
+    targets[0].range = TierRange {
+        found: Tier::NeedsCodeChange,
+        with_suspected: Tier::Blocked,
+    };
+    result.targets = targets.into_iter().collect();
+    for width in [60, 80] {
+        let styled = render(
+            &result,
+            &TerminalOptions {
+                styled: true,
+                width,
+                all: false,
+            },
+        );
+        let plain = at_width(&result, width, false);
+        assert!(styled.contains("\x1b[2m22f82d5b8473-1\x1b[0m"), "{styled}");
+        assert!(styled.contains("\x1b[1mneeds-root\x1b[0m"), "{styled}");
+        assert!(
+            styled.contains("\x1b[1mkubernetes-restricted\x1b[0m"),
+            "{styled}"
+        );
+        assert!(styled.contains(" NEEDS CODE CHANGE \x1b[0m…"), "{styled}");
+        let stripped = String::from_utf8(strip_sgr(styled.as_bytes())).unwrap();
+        assert_eq!(stripped.lines().count(), plain.lines().count());
+        for (s, p) in stripped.lines().zip(plain.lines()) {
+            assert_eq!(s.width(), p.width(), "{s:?} / {p:?}");
+        }
+        for line in styled.lines() {
+            let opens = line.matches("\x1b[").count();
+            let resets = line.matches("\x1b[0m").count();
+            if opens > 0 {
+                assert!(
+                    line.rfind("\x1b[").unwrap() == line.rfind("\x1b[0m").unwrap(),
+                    "{line:?}"
+                );
+                assert!(resets > 0, "{line:?}");
+            }
+        }
+    }
+}
+
+fn regions_at(ranges: &[(u32, u32)]) -> String {
+    let mut result = sample(false);
+    result.not_checked = [NotCheckedEntry::Regions {
+        location: loc("archival/bbunzip.c", None, Scope::File),
+        reason: RegionReason::Unparseable,
+        ranges: ranges
+            .iter()
+            .map(|&(first, last)| LineRange { first, last })
+            .collect(),
+    }]
+    .into_iter()
+    .collect();
+    terminal(&result, false)
+}
+
+#[test]
+fn the_regions_of_a_file_print_on_one_line() {
+    for (ranges, line) in [
+        (
+            &[(41, 41), (47, 47), (250, 251)][..],
+            "  archival/bbunzip.c: unparseable regions at lines 41, 47, 250–251",
+        ),
+        (
+            &[(41, 41)][..],
+            "  archival/bbunzip.c: unparseable region at line 41",
+        ),
+        (
+            &[(250, 251)][..],
+            "  archival/bbunzip.c: unparseable region at lines 250–251",
+        ),
+    ] {
+        let report = regions_at(ranges);
+        assert!(
+            lines_of(&report).contains(&line),
+            "{line:?} not in\n{report}"
+        );
+    }
+    let many: Vec<(u32, u32)> = (1..=60).map(|n| (n * 10, n * 10)).collect();
+    let report = regions_at(&many);
+    assert!(widest(&report) <= 80, "{report}");
+    let joined: String = report.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+    let list: Vec<String> = many.iter().map(|(n, _)| n.to_string()).collect();
+    let expected = format!(
+        "archival/bbunzip.c: unparseable regions at lines {}",
+        list.join(", ")
+    );
+    assert!(joined.contains(&expected), "{report}");
+    assert!(report.contains("\n    "), "{report}");
+}
+
+#[test]
+fn a_target_box_counts_found_suspected_and_allowed() {
+    for ((found, suspected, allowed), text) in [
+        ((3, 0, 10), "│ [needs Windows]  3 found · 10 allowed "),
+        (
+            (12, 1, 26),
+            "│ [needs Windows]  12 found · 1 suspected · 26 allowed ",
+        ),
+        ((0, 2, 0), "│ [needs Windows]  2 suspected "),
+        ((0, 0, 0), "│ [needs Windows]  no findings "),
+    ] {
+        let mut result = sample(false);
+        let mut targets = result.targets.into_vec();
+        targets[0].found = found;
+        targets[0].suspected = suspected;
+        targets[0].allowed = allowed;
+        result.targets = targets.into_iter().collect();
+        let report = terminal(&result, false);
+        assert!(report.contains(text), "{text:?} not in\n{report}");
+    }
+}
+
+#[test]
+fn no_line_overflows_even_where_optimal_fit_would() {
+    let url = format!("https://example.invalid/{}", "a".repeat(44));
+    assert_eq!(url.len(), 68);
+    let mut result = sample(false);
+    result.groups[0].rules[0].fix = format!("See {url}");
+    result.input_scope_text = format!("See {url}");
+    for width in [60, 80] {
+        let report = at_width(&result, width, false);
+        assert!(widest(&report) <= width, "{report}");
+        for line in report.lines().filter(|l| l.starts_with(['┌', '│', '└'])) {
+            assert_eq!(line.width(), width, "{line:?}");
+        }
+        assert!(report.contains(&url[..40]), "{report}");
+    }
+    let report = terminal(&result, false);
+    assert!(
+        report.contains(&format!("    fix  See\n         {url}\n")),
+        "{report}"
+    );
+    assert!(report.contains(&format!("│ See {url}     │\n")), "{report}");
+}
+
+#[test]
+fn spaces_inside_a_value_are_kept_even_at_a_break() {
+    let mut result = sample(false);
+    let inner = format!("{} {}.c", "x".repeat(60), "y".repeat(20));
+    result.not_checked = [" a.c", inner.as_str()]
+        .into_iter()
+        .map(|path| {
+            not_checked(
+                loc(path, None, Scope::File),
+                FileOutcome::NotChecked {
+                    reason: NotCheckedReason::Unparseable,
+                    details: Details::None,
+                },
+                false,
+            )
+        })
+        .collect();
+    let mut findings = result.findings.into_vec();
+    findings[0].finding.location.path = Some(RelPath::try_from(" a.c").unwrap());
+    result.findings = findings.into_iter().collect();
+    let report = terminal(&result, false);
+    assert!(report.contains("\n    ●  a.c:7  in "), "{report}");
+    assert!(report.contains("\n   a.c: unparseable\n"), "{report}");
+    assert!(
+        report.contains(&format!(
+            "\n  {} \n    {}.c: unparseable\n",
+            "x".repeat(60),
+            "y".repeat(20)
+        )),
+        "{report}"
+    );
+}
+
+#[test]
+fn one_file_no_reader_understands_is_singular() {
+    let report = terminal(&no_reader_run(1), false);
+    assert!(
+        report.contains("\n  no reader: 1 file (--all to list)\n"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_target_box_counts_unmapped_behaviours() {
+    let report = terminal(&sample(false), false);
+    assert!(
+        report.contains("│ [needs code change … blocked]  1 found · 1 unmapped "),
+        "{report}"
+    );
+    let mut result = sample(false);
+    let mut targets = result.targets.into_vec();
+    targets[1].found = 0;
+    result.targets = targets.into_iter().collect();
+    let report = terminal(&result, false);
+    assert!(
+        report.contains("│ [needs code change … blocked]  1 unmapped "),
+        "{report}"
+    );
+    assert!(!report.contains("no findings"), "{report}");
+}
+
+#[test]
+fn a_suspected_only_group_names_only_its_suspected_count() {
+    let mut result = seed_shaped();
+    let mut findings = result.findings.into_vec();
+    findings[0].finding.confidence = Confidence::Suspected;
+    result.findings = findings.into_iter().collect();
+    result.groups[0].found = 0;
+    result.groups[0].suspected = 1;
+    let report = terminal(&result, false);
+    assert!(report.contains("\nlow-port  1 suspected\n"), "{report}");
+    assert!(report.contains("\n    ○ low-port.c:11  in "), "{report}");
 }

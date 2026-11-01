@@ -50,9 +50,13 @@ fn the_seed_run_has_a_verdict_for_every_target() {
             with_suspected: Tier::Blocked
         }
     );
-    assert_eq!((kubernetes.found, kubernetes.suspected), (12, 1));
+    assert_eq!(
+        (kubernetes.found, kubernetes.suspected, kubernetes.allowed),
+        (12, 1, 0)
+    );
     let docker = &result.targets[0];
     assert_eq!(docker.range.found, Tier::NeedsWindows);
+    assert_eq!((docker.found, docker.suspected, docker.allowed), (3, 0, 10));
     assert!(result.targets.iter().all(|t| t.unmapped.is_empty()));
     assert_eq!(result.counts.read, 5);
     assert!(!result.host_dependent);

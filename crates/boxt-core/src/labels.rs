@@ -38,6 +38,12 @@ pub const fn region_reason(reason: RegionReason) -> &'static str {
     }
 }
 
+pub const fn region_reason_plural(reason: RegionReason) -> &'static str {
+    match reason {
+        RegionReason::Unparseable => "unparseable regions",
+    }
+}
+
 pub fn not_checked_reason(reason: NotCheckedReason) -> String {
     match reason {
         NotCheckedReason::NoReader => "no reader".to_owned(),

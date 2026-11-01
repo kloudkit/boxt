@@ -10,7 +10,8 @@ use boxt_verdict::boxt_core::outcome::{
 };
 use boxt_verdict::boxt_core::verdict::{
     BehaviourId, BehaviourTier, Confidence, Control, ControlId, Evidence, EvidenceId, Finding,
-    NotCheckedEntry, Observation, Profile, Result, RuleId, TargetId, Tier, TierRange,
+    GroupKey, LineRange, NotCheckedEntry, Observation, Profile, Result, RuleId, TargetId, Tier,
+    TierRange,
 };
 use boxt_verdict::boxt_core::{SortedVec, Text};
 use boxt_verdict::{VerdictError, VerdictInput, build};
@@ -253,17 +254,59 @@ fn the_worst_control_applies() {
 }
 
 #[test]
-fn an_allowed_behaviour_is_ready_and_counted() {
-    let run = Run::new(vec![finding(
-        "setuid",
-        Confidence::Found,
-        location(0, "/src", "main.c", Some(3), in_main()),
-    )]);
+fn an_allowed_behaviour_is_ready_and_counted_as_allowed() {
+    let run = Run::new(vec![
+        finding(
+            "setuid",
+            Confidence::Found,
+            location(0, "/src", "main.c", Some(3), in_main()),
+        ),
+        finding(
+            "needs-root",
+            Confidence::Suspected,
+            location(0, "/src", "main.c", Some(4), in_main()),
+        ),
+    ]);
     let result = run.build().unwrap();
     let docker = target(&result, "docker-default");
     assert_eq!(docker.range.found, Tier::Ready);
-    assert_eq!(docker.found, 1);
+    assert_eq!((docker.found, docker.suspected, docker.allowed), (0, 0, 2));
     assert!(docker.unmapped.is_empty());
+    let podman = target(&result, "rootless-podman");
+    assert_eq!(podman.unmapped.as_slice(), &[behaviour("setuid")]);
+    assert_eq!((podman.found, podman.suspected, podman.allowed), (0, 1, 0));
+}
+
+#[test]
+fn a_behaviour_mapped_to_ready_counts_as_allowed() {
+    let mut run = Run::new(vec![
+        finding(
+            "bind",
+            Confidence::Found,
+            location(0, "/src", "main.c", Some(3), in_main()),
+        ),
+        finding(
+            "bind",
+            Confidence::Suspected,
+            location(0, "/src", "main.c", Some(5), in_main()),
+        ),
+        finding(
+            "root",
+            Confidence::Found,
+            location(0, "/src", "main.c", Some(7), in_main()),
+        ),
+    ]);
+    run.profiles = vec![profile(
+        "t",
+        &[
+            ("a", &[("bind", Tier::Ready)]),
+            ("b", &[("root", Tier::NeedsCodeChange)]),
+        ],
+        &[],
+    )];
+    let t = run.build().unwrap().targets[0].clone();
+    assert_eq!((t.found, t.suspected, t.allowed), (1, 0, 2));
+    assert_eq!(t.range.found, Tier::NeedsCodeChange);
 }
 
 #[test]
@@ -290,7 +333,10 @@ fn an_unmapped_behaviour_sets_no_tier_and_is_not_counted() {
             with_suspected: Tier::Ready
         }
     );
-    assert_eq!((openshift.found, openshift.suspected), (0, 0));
+    assert_eq!(
+        (openshift.found, openshift.suspected, openshift.allowed),
+        (0, 0, 0)
+    );
     let kubernetes = target(&result, "kubernetes-restricted");
     assert!(kubernetes.unmapped.is_empty());
     assert_eq!(kubernetes.range.found, Tier::ReadyWithConfig);
@@ -332,7 +378,7 @@ fn the_range_runs_from_found_to_found_and_suspected() {
             with_suspected: Tier::Blocked
         }
     );
-    assert_eq!((t.found, t.suspected), (1, 2));
+    assert_eq!((t.found, t.suspected, t.allowed), (1, 2, 0));
 }
 
 #[test]
@@ -380,15 +426,15 @@ fn not_checked_lists_files_regions_and_dynamic_loads_with_reasons() {
         .with_lines(30),
         Vec::new(),
     );
-    let region = Region {
-        first_line: 10,
-        last_line: 20,
+    let region = |first_line, last_line| Region {
+        first_line,
+        last_line,
         reason: RegionReason::Unparseable,
     };
     let partly = file(
         "partly.c",
         Outcome::new(FileOutcome::Read, Some(FileKind::Source)).with_lines(50),
-        vec![region],
+        vec![region(30, 31), region(10, 20), region(41, 41)],
     );
     run.files = vec![fifo.clone(), unparseable.clone(), partly.clone()].into();
     let dl_location = location(
@@ -413,11 +459,23 @@ fn not_checked_lists_files_regions_and_dynamic_loads_with_reasons() {
             location: fifo.location.clone(),
             outcome: fifo.outcome.clone(),
         },
-        NotCheckedEntry::Region {
+        NotCheckedEntry::Regions {
             location: partly.location.clone(),
-            first_line: 10,
-            last_line: 20,
             reason: RegionReason::Unparseable,
+            ranges: vec![
+                LineRange {
+                    first: 10,
+                    last: 20,
+                },
+                LineRange {
+                    first: 30,
+                    last: 31,
+                },
+                LineRange {
+                    first: 41,
+                    last: 41,
+                },
+            ],
         },
         NotCheckedEntry::DynamicLoad {
             location: dl_location,
@@ -762,4 +820,143 @@ fn a_fixed_identity_has_a_fixed_id() {
     );
     let result = Run::new(vec![f]).build().unwrap();
     assert_eq!(result.findings[0].id.as_str(), "5a5d9d7ad72c-1");
+}
+
+fn with_rule(mut f: Finding, rule: &str, fix: &str) -> Finding {
+    f.rule = RuleId::new(rule).unwrap();
+    fix.clone_into(&mut f.fix);
+    f
+}
+
+#[test]
+fn findings_group_by_behaviour_with_one_section_per_rule() {
+    let at = |path: &str, line| location(0, "/src", path, Some(line), in_main());
+    let findings = vec![
+        with_rule(
+            finding("setuid", Confidence::Found, at("0.c", 4)),
+            "user/setuid-x",
+            "user fix",
+        ),
+        with_rule(
+            finding("setuid", Confidence::Suspected, at("a.c", 9)),
+            "identity/setuid",
+            "corpus fix",
+        ),
+        with_rule(
+            finding("setuid", Confidence::Found, at("a.c", 2)),
+            "identity/setuid",
+            "corpus fix",
+        ),
+        finding("needs-root", Confidence::Found, at("c.c", 1)),
+        with_rule(
+            finding("needs-root", Confidence::Suspected, at("c.c", 2)),
+            "identity/needs-root",
+            "root fix",
+        ),
+        finding("low-port", Confidence::Suspected, at("d.c", 1)),
+    ];
+    let result = Run::new(findings).build().unwrap();
+    let keys: Vec<&GroupKey> = result.groups.iter().map(|g| &g.key).collect();
+    assert_eq!(
+        keys,
+        [
+            &GroupKey::Behaviour(behaviour("low-port")),
+            &GroupKey::Behaviour(behaviour("needs-root")),
+            &GroupKey::Behaviour(behaviour("setuid")),
+        ]
+    );
+    let setuid = &result.groups[2];
+    assert_eq!((setuid.found, setuid.suspected), (2, 1));
+    let rules: Vec<(&str, &str)> = setuid
+        .rules
+        .iter()
+        .map(|r| (r.rule.as_str(), r.fix.as_str()))
+        .collect();
+    assert_eq!(
+        rules,
+        [
+            ("identity/setuid", "corpus fix"),
+            ("user/setuid-x", "user fix")
+        ]
+    );
+    let in_order: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|r| r.finding.rule.as_str() == "identity/setuid")
+        .map(|r| r.id.clone())
+        .collect();
+    assert_eq!(setuid.rules[0].findings, in_order);
+    assert_eq!(setuid.rules[0].findings.len(), 2);
+    assert_eq!(
+        result.findings[0].finding.rule.as_str(),
+        "user/setuid-x",
+        "the user rule's finding comes first in findings order"
+    );
+    assert_eq!(result.groups[1].rules.len(), 2);
+    for reported in result.findings.iter() {
+        let holders: Vec<_> = result
+            .groups
+            .iter()
+            .flat_map(|g| g.rules.iter().map(move |r| (g, r)))
+            .filter(|(_, r)| r.findings.contains(&reported.id))
+            .collect();
+        assert_eq!(holders.len(), 1, "{}", reported.id);
+        let (group, section) = holders[0];
+        assert_eq!(
+            group.key,
+            GroupKey::Behaviour(reported.finding.behaviour.clone())
+        );
+        assert_eq!(section.rule, reported.finding.rule);
+        assert_eq!(
+            section
+                .findings
+                .iter()
+                .filter(|id| **id == reported.id)
+                .count(),
+            1
+        );
+    }
+    assert_eq!((result.groups[0].found, result.groups[0].suspected), (0, 1));
+}
+
+#[test]
+fn no_findings_give_no_groups() {
+    assert!(Run::new(Vec::new()).build().unwrap().groups.is_empty());
+}
+
+#[test]
+fn files_no_reader_understands_are_counted() {
+    let mut run = Run::new(Vec::new());
+    let no_reader = |path: &str| {
+        file(
+            path,
+            Outcome::new(
+                FileOutcome::NotChecked {
+                    reason: NotCheckedReason::NoReader,
+                    details: Details::None,
+                },
+                None,
+            ),
+            Vec::new(),
+        )
+    };
+    let unparseable = file(
+        "broken.c",
+        Outcome::new(
+            FileOutcome::NotChecked {
+                reason: NotCheckedReason::Unparseable,
+                details: Details::None,
+            },
+            Some(FileKind::Source),
+        )
+        .with_lines(3),
+        Vec::new(),
+    );
+    for f in [no_reader("README"), no_reader("x.txt"), unparseable] {
+        run.files.insert(f);
+    }
+    let result = run.build().unwrap();
+    assert_eq!(result.no_reader, 2);
+    assert_eq!(result.not_checked.len(), 3);
+    assert_eq!(Run::new(Vec::new()).build().unwrap().no_reader, 0);
 }

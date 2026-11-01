@@ -40,13 +40,17 @@ alone.
 | `RuleCoverage.file_kinds` | sorted alternatives, each a sorted list of `FileKind`s; `RuleCoverage` refuses an empty alternative and any duplicate |
 | each `SortedVec` field of `Profile`, `Control`, `Coverage` and `Result` | sorted |
 | `TargetVerdict.unmapped` | sorted, without repeats |
-| `Result.not_checked` | sorted by `NotCheckedEntry`'s derived `Ord`: variant (`File`, `Region`, `DynamicLoad`), then `location` |
+| `Result.not_checked` | sorted by `NotCheckedEntry`'s derived `Ord`: variant (`File`, `Regions`, `DynamicLoad`), then `location` |
+| `NotCheckedEntry::Regions.ranges` | line order: `first`, then `last` |
+| `Result.groups` | by `GroupKey`: behaviour id, one group per behaviour |
+| `Group.rules` | by rule id, one `RuleSection` per rule |
+| `RuleSection.findings` | `Result.findings` order |
 | a list inside an element of a sorted list (`Finding.guards`, `Finding.location.frames`) | its own order, from the rows above |
 
 `Result.findings` is a `SortedVec<ReportedFinding>`; `ReportedFinding` sorts by its
 `finding` first, so the list keeps `Finding`'s field order, `location` first, and the fixed
-order is byte-exact on every host. User grouping and sort live only in `Result.groups`
-(Story 6.2).
+order is byte-exact on every host. Grouping lives only in `Result.groups` (§ Groups and
+the no-reader count); other group keys and user sort come with Stories 2.4 and 6.2.
 
 Canonical order for facts and outcomes, used by the collector for run-wide cuts and for
 the order it hands facts to `boxt-rules`, is `CanonicalKey`'s order: input index, then the
@@ -1025,8 +1029,11 @@ are:
   share and the uncounted and incomplete lists, and added `Result.macro_tables_cut`. That
   change is not additive, so the rule above would make it a major bump; by operator decision
   1.0 is re-recorded instead, because no output has shipped (as `RULE_SCHEMA_VERSION` 1.0
-  was). `RULE_SCHEMA_VERSION` stays 1.0, since no `Fact` changed, and its snapshot is
-  unchanged. The worker messages and `Job` carry no version: both ends are the same binary.
+  was). Story 1.12 added `Result.groups`, `Result.no_reader` and `TargetVerdict.allowed`,
+  and replaced `NotCheckedEntry::Region` with the per-file `Regions`; by the same operator
+  decision 1.0 is re-recorded once more rather than bumped. `RULE_SCHEMA_VERSION` stays
+  1.0, since no `Fact` changed, and its snapshot is unchanged. The worker messages and `Job`
+  carry no version: both ends are the same binary.
 
 ## Verdict types (AD-5, AD-16, AD-19, RA2-M6)
 
@@ -1067,9 +1074,12 @@ indexed by `InputRef.index`, supplied by the caller: verdict reads no filesystem
   behaviour neither listed nor allowed is unmapped: it goes into `TargetVerdict.unmapped`,
   sets no tier and is not counted.
 - **Verdict line (FR-23).** `TargetVerdict{target, range: TierRange{found,
-  with_suspected}, found, suspected, unmapped}`: `range.found` is the worst tier over found
-  findings, `with_suspected` over found and suspected, each `Ready` when no finding counts.
-  `found` and `suspected` count the findings whose behaviour the profile lists or allows.
+  with_suspected}, found, suspected, allowed, unmapped}`: `range.found` is the worst tier
+  over found findings, `with_suspected` over found and suspected, each `Ready` when no
+  finding counts. `found` and `suspected` count the findings whose tier on the target is
+  worse than `Ready`; `allowed` counts those the profile allows or maps to `Ready`,
+  whatever their confidence; an unmapped finding is in none of the three (Story 1.12
+  amended the Story 1.9 rule, which counted allowed findings as found or suspected).
   The files-read and not-checked counts are `Result.counts`, from `verdict_counts`; the
   SM-3 shares are `Result.sm3`, from `sm3_share`. Verdict recomputes neither.
 - `Result.host_dependent` is true when any file's outcome is host-dependent or
@@ -1084,13 +1094,31 @@ exists without it and "ready" can never be shown without the list.
 - `File{location, outcome}` for every `NotChecked` or `Aggregate` file: special files,
   links, limits, faults, `NotInCompileDatabase` and the rest, each with its `Outcome` and so
   its reason. `OutOfScope` files are not listed (they feed only the FR-5 counts).
-- `Region{location, first_line, last_line, reason}` for every region of a `Read` file, at
-  the file's location.
+- `Regions{location, reason, ranges}` once per `Read` file and region reason, at the file's
+  location: `ranges` holds every region of that reason as a `LineRange{first, last}`, in
+  line order (Story 1.12; it replaced one `Region` entry per region).
 - `DynamicLoad{location, symbol}` for each `Observation::DynamicLoad`, which also stays in
   `Result.observations`.
 - Unmapped behaviours are per target, in `TargetVerdict.unmapped`. Per-control entries
   (controls no rule can detect, or whose rules read no input kind that was read) need
   `Coverage` and are Story 4.2's.
+
+### Groups and the no-reader count (FR-29, FR-30, AD-5, AD-6, Story 1.12)
+
+- `Result.groups` is a `Vec<Group>`. A `Group` is `{key, found, suspected, rules}`: `key`
+  is a `GroupKey`, which has the one variant `Behaviour(BehaviourId)` until Stories 2.4
+  and 6.2 add others; `found` and `suspected` count the group's findings by confidence,
+  over every finding of the behaviour, mapped or not; `rules` holds one
+  `RuleSection{rule, fix, findings}` per rule that found the behaviour, `fix` that rule's
+  fix and `findings` the `FindingId`s of its findings.
+- Groups run by behaviour id, sections by rule id, and each section's ids in
+  `Result.findings` order. Every finding is in exactly one section. `Result.findings`
+  keeps its own fixed order, and the ids are those of § Finding identity and id.
+- `Result.no_reader` counts the `NotCheckedEntry::File` entries whose outcome is
+  `NotChecked{NoReader}`. They stay in `Result.not_checked`; the terminal alone prints
+  them as one line naming `--all` unless `--all` is given (FR-29 as amended).
+- Only `boxt-verdict` builds both. A renderer groups, sorts and counts nothing: it prints
+  the groups in order and looks each id up in `Result.findings`.
 
 ### Input scope (FR-26, AD-16)
 
@@ -1136,11 +1164,14 @@ exists without it and "ready" can never be shown without the list.
 
 ## Labels (FR-26, AD-5, Story 1.10)
 
-`labels` is the one source of display text for closed values: one table each for `Tier`
-("blocked", "needs Windows", "needs code change", "ready with config", "ready"),
-`Confidence`, `NotCheckedReason` (a limit by its flag name, and the nested fault,
-special-file, link-target and I/O kinds), `RegionReason` and `OutOfScopeCause`, plus
+`labels` is the one source of the value labels, the display text of closed values: one
+table each for `Tier` ("blocked", "needs Windows", "needs code change", "ready with
+config", "ready"), `Confidence`, `NotCheckedReason` (a limit by its flag name, and the
+nested fault, special-file, link-target and I/O kinds), `RegionReason` (`region_reason`,
+and `region_reason_plural` for a file with several regions) and `OutOfScopeCause`, plus
 `HOST_DEPENDENT_TEXT`, the note a report prints under the input-scope warning when
 `Result.host_dependent` is set, and `HOST_DEPENDENT_MARK` for a host-dependent not-checked
-entry. Every renderer prints these and never writes its own; a renderer computes no count,
-tier, order or text that the `Result` or these tables already hold.
+entry. Every renderer prints these for those values and never writes its own. The layout
+words around them ("found", "allowed", "unmapped", "fix", "guard", "files read", "(--all
+to list)" and the like) belong to each renderer. A renderer computes no count, tier,
+order or text that the `Result` or these tables already hold.

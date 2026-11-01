@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -16,6 +16,7 @@ use boxt_collector::path::text_from_path;
 use boxt_collector::pool::{self, PoolConfig, default_jobs};
 use boxt_collector::worker::WORKER_SUBCOMMAND;
 use boxt_collector::{Collected, RunOptions, RunStats};
+use boxt_render::TerminalOptions;
 use boxt_rules::{embedded, evaluate, load_tar};
 use boxt_verdict::{VerdictInput, build, resolve_targets};
 use clap::error::ErrorKind;
@@ -25,6 +26,7 @@ use clap::{Parser, Subcommand};
 static ALLOCATOR: CapAllocator = CapAllocator;
 
 const EXIT_ERROR: u8 = 2;
+const PIPED_WIDTH: usize = 80;
 
 #[derive(Parser)]
 #[command(
@@ -36,14 +38,35 @@ const EXIT_ERROR: u8 = 2;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    #[arg(value_name = "INPUT", required = true)]
+    #[arg(
+        value_name = "INPUT",
+        required = true,
+        help = "A source tree or file to check; give several to check them together"
+    )]
     inputs: Vec<PathBuf>,
-    #[arg(long = "target", value_name = "ID")]
+    #[arg(
+        long = "target",
+        value_name = "ID",
+        help = "A target to give a verdict for, repeatable; with none named, every target is checked"
+    )]
     targets: Vec<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "N",
+        help = "How many worker processes read files at once [default: one per core]"
+    )]
     jobs: Option<NonZeroU32>,
-    #[arg(long = "limit", value_name = "NAME=VALUE")]
+    #[arg(
+        long = "limit",
+        value_name = "NAME=VALUE",
+        help = "Change one limit, such as file-size=1048576, repeatable"
+    )]
     limits: Vec<String>,
+    #[arg(
+        long,
+        help = "List every file not checked, including each file no reader understands"
+    )]
+    all: bool,
 }
 
 #[derive(Subcommand)]
@@ -52,30 +75,36 @@ enum Command {
     Worker,
     #[command(name = "__bench", hide = true)]
     Bench {
+        #[arg(help = "The source tree to time")]
         root: PathBuf,
-        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(
+            long,
+            default_value_t = 5,
+            value_parser = clap::value_parser!(u32).range(1..),
+            help = "How many timed runs of each mode"
+        )]
         runs: u32,
-        #[arg(long)]
+        #[arg(long, help = "How many worker processes")]
         jobs: Option<NonZeroU32>,
     },
     #[command(name = "__measure", hide = true)]
     Measure {
-        #[arg(required = true)]
+        #[arg(required = true, help = "The inputs to measure")]
         inputs: Vec<PathBuf>,
-        #[arg(long)]
+        #[arg(long, help = "How many worker processes")]
         jobs: Option<NonZeroU32>,
     },
     #[command(name = "__collect", hide = true)]
     Collect {
-        #[arg(required = true)]
+        #[arg(required = true, help = "The inputs to collect")]
         inputs: Vec<PathBuf>,
-        #[arg(long)]
+        #[arg(long, help = "How many worker processes")]
         jobs: Option<NonZeroU32>,
-        #[arg(long = "limit", value_name = "NAME=VALUE")]
+        #[arg(long = "limit", value_name = "NAME=VALUE", help = "Change one limit")]
         limits: Vec<String>,
-        #[arg(long)]
+        #[arg(long, help = "Print the limit measurements")]
         measure: bool,
-        #[arg(long)]
+        #[arg(long, help = "List every file not read in full")]
         list: bool,
     },
 }
@@ -115,7 +144,7 @@ fn main() -> ExitCode {
             measure,
             list,
         }) => collect(&inputs, jobs, &limits, measure, list),
-        None => match report(&cli.inputs, &cli.targets, cli.jobs, &cli.limits) {
+        None => match report(&cli.inputs, &cli.targets, cli.jobs, &cli.limits, cli.all) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("boxt: {e}");
@@ -152,6 +181,7 @@ fn report(
     targets: &[String],
     jobs: Option<NonZeroU32>,
     limits: &[String],
+    all: bool,
 ) -> Result<(), String> {
     let settings = settings(inputs, targets, jobs, limits)?;
     #[cfg(feature = "fault-fixtures")]
@@ -189,11 +219,25 @@ fn report(
     .map_err(|e| e.to_string())?;
     let stdout = std::io::stdout();
     let styled = anstream::AutoStream::choice(&stdout) != anstream::ColorChoice::Never;
-    let text = boxt_render::terminal(&result, styled);
+    let text = boxt_render::terminal(
+        &result,
+        &TerminalOptions {
+            styled,
+            width: terminal_width(&stdout),
+            all,
+        },
+    );
     let mut out = anstream::AutoStream::auto(stdout.lock());
     out.write_all(text.as_bytes())
         .and_then(|()| out.flush())
         .map_err(|e| format!("cannot write the report: {e}"))
+}
+
+fn terminal_width(stdout: &std::io::Stdout) -> usize {
+    if !stdout.is_terminal() {
+        return PIPED_WIDTH;
+    }
+    terminal_size::terminal_size_of(stdout).map_or(PIPED_WIDTH, |(w, _)| usize::from(w.0))
 }
 
 fn parse_limits(given: &[String]) -> Result<Limits, String> {

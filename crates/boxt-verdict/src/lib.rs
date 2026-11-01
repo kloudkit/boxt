@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod groups;
 mod ids;
 mod not_checked;
 mod scope;
@@ -77,6 +78,8 @@ pub fn build(input: &VerdictInput<'_>) -> std::result::Result<Result, VerdictErr
     let input_scope = scope::of(input.files);
     let host_dependent = !input.host_dependent_trees.is_empty()
         || input.files.iter().any(|f| f.outcome.host_dependent);
+    let findings = ids::assign(input.findings, input.roots);
+    let not_checked = not_checked::entries(input.files, input.observations);
     Ok(Result {
         versions: Versions::CURRENT,
         input_scope,
@@ -89,8 +92,10 @@ pub fn build(input: &VerdictInput<'_>) -> std::result::Result<Result, VerdictErr
             .iter()
             .map(|p| targets::verdict(p, input.findings))
             .collect(),
-        findings: ids::assign(input.findings, input.roots),
-        not_checked: not_checked::entries(input.files, input.observations),
+        groups: groups::by_behaviour(&findings),
+        no_reader: not_checked::no_reader(&not_checked),
+        findings,
+        not_checked,
         observations: input.observations.clone(),
     })
 }

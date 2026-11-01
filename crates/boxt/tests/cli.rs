@@ -50,12 +50,32 @@ fn the_first_answer_names_scope_verdict_findings_and_not_checked() {
     ]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let text = stdout(&out);
-    assert!(text.starts_with("Source only: "), "{text}");
-    let verdict = text.find("\ndocker-default  needs Windows  (").unwrap();
-    let findings = text.find("\nFindings\n").unwrap();
+    let mut lines = text.lines();
+    assert!(lines.next().unwrap().starts_with("┌─"), "{text}");
+    assert!(
+        lines.next().unwrap().starts_with("│ Source only: "),
+        "{text}"
+    );
+    let verdict = text.find("\n┌ docker-default ─").unwrap();
+    let badge = text
+        .find("\n│ [needs Windows]  3 found · 10 allowed ")
+        .unwrap();
+    let group = text.find("\nsetuid  ").unwrap();
     let not_checked = text.find("\nNot checked\n").unwrap();
-    assert!(verdict < findings && findings < not_checked, "{text}");
-    assert!(text.contains("  setuid.c:7  in drop_to(const char *, uid_t, gid_t)\n"));
+    assert!(
+        verdict < badge && badge < group && group < not_checked,
+        "{text}"
+    );
+    assert!(
+        text.contains("    ● setuid.c:7  in drop_to(const char *, uid_t, gid_t)  id-change-call\n"),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("    fix  Start as the user and groups the program needs")
+            .count(),
+        1,
+        "{text}"
+    );
     assert!(text.contains("Source lines not checked: "));
 }
 
@@ -73,7 +93,7 @@ fn every_target_gets_a_line_and_runs_are_byte_identical() {
         "rootless-podman",
     ] {
         assert!(
-            text.contains(&format!("\n{target}  ")),
+            text.contains(&format!("\n┌ {target} ─")),
             "{target} in {text}"
         );
     }
@@ -133,7 +153,7 @@ fn an_input_named_like_a_hidden_subcommand_is_scanned() {
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(0), "{name}: {}", stderr(&out));
-        assert!(stdout(&out).starts_with("Source only: "), "{name}");
+        assert!(stdout(&out).contains("│ Source only: "), "{name}");
     }
 }
 
@@ -199,7 +219,7 @@ fn a_small_file_size_limit_lists_the_file_as_not_checked() {
 }
 
 #[test]
-fn forced_colour_only_adds_escape_sequences() {
+fn forced_colour_keeps_the_plain_lines_and_badge_widths() {
     let plain = boxt([seed_dir()]);
     let coloured = Command::new(env!("CARGO_BIN_EXE_boxt"))
         .arg(seed_dir())
@@ -209,7 +229,17 @@ fn forced_colour_only_adds_escape_sequences() {
         .unwrap();
     assert_eq!(coloured.status.code(), Some(0));
     assert!(coloured.stdout.contains(&0x1b));
-    assert_eq!(strip_sgr(&coloured.stdout), plain.stdout);
+    let stripped = String::from_utf8(strip_sgr(&coloured.stdout)).unwrap();
+    let plain = stdout(&plain);
+    assert_eq!(stripped.lines().count(), plain.lines().count());
+    for (s, p) in stripped.lines().zip(plain.lines()) {
+        if p.starts_with("│ [") {
+            assert_eq!(s.chars().count(), p.chars().count(), "{s:?} / {p:?}");
+        } else {
+            assert_eq!(s, p);
+        }
+    }
+    assert!(stripped.contains(" NEEDS WINDOWS "), "{stripped}");
 }
 
 fn strip_sgr(bytes: &[u8]) -> Vec<u8> {
@@ -384,4 +414,96 @@ fn running(pid: u32) -> bool {
         .ok()
         .and_then(|stat| stat.rfind(')').map(|i| stat[i + 2..i + 3].to_string()))
         .is_some_and(|state| state != "Z")
+}
+
+#[test]
+fn help_describes_every_argument_and_flag() {
+    let out = boxt(["--help"]);
+    assert_eq!(out.status.code(), Some(0));
+    let help = stdout(&out);
+    for (flag, words) in [
+        ("<INPUT>...", "A source tree or file to check"),
+        ("--target <ID>", "with none named, every target is checked"),
+        ("--jobs <N>", "worker processes"),
+        ("--limit <NAME=VALUE>", "Change one limit"),
+        ("--all", "no reader understands"),
+        ("--help", "Print help"),
+        ("--version", "Print version"),
+    ] {
+        let line = help
+            .lines()
+            .find(|l| l.trim_start().starts_with(flag) || l.contains(&format!(", {flag}")))
+            .unwrap_or_else(|| panic!("{flag} not in\n{help}"));
+        let described = line.contains(words)
+            || help[help.find(line).unwrap()..]
+                .lines()
+                .take(3)
+                .any(|l| l.contains(words));
+        assert!(described, "{flag} has no description in\n{help}");
+    }
+}
+
+fn mixed_tree(name: &str) -> Dir {
+    let dir = temp(name);
+    std::fs::write(
+        dir.0.join("a.c"),
+        "#include <unistd.h>\nint f(void) { return setuid(0); }\n",
+    )
+    .unwrap();
+    for i in 0..5 {
+        std::fs::write(dir.0.join(format!("notes-{i}.txt")), "plain text\n").unwrap();
+    }
+    dir
+}
+
+#[test]
+fn files_no_reader_understands_show_as_one_count_until_all() {
+    let dir = mixed_tree("no-reader");
+    let out = boxt([&dir.0]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("\nNot checked\n  no reader: 5 files (--all to list)\n"),
+        "{text}"
+    );
+    assert!(!text.contains("notes-0.txt"), "{text}");
+    let all = boxt([dir.0.as_os_str(), "--all".as_ref()]);
+    assert_eq!(all.status.code(), Some(0), "{}", stderr(&all));
+    let text = stdout(&all);
+    assert!(!text.contains("(--all to list)"), "{text}");
+    for i in 0..5 {
+        assert!(
+            text.contains(&format!("\n  notes-{i}.txt: no reader\n")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn piped_output_is_80_columns_and_byte_identical() {
+    let dir = mixed_tree("piped");
+    let deep = dir
+        .0
+        .join("a-rather-long-directory-name/another-long-directory-name");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(
+        deep.join("with-a-long-file-name.c"),
+        "#include <unistd.h>\nint drop_privileges_for_a_long_time(const char *name, unsigned long long a, unsigned long long b) { return setuid(0); }\n",
+    )
+    .unwrap();
+    let first = Command::new(env!("CARGO_BIN_EXE_boxt"))
+        .arg(&dir.0)
+        .env("COLUMNS", "300")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    let second = boxt([&dir.0]);
+    assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
+    assert_eq!(first.stdout, second.stdout);
+    assert!(!first.stdout.contains(&0x1b));
+    let text = stdout(&first);
+    assert_eq!(text.lines().next().unwrap().chars().count(), 80, "{text}");
+    for line in text.lines() {
+        assert!(line.chars().count() <= 80, "{line:?}");
+    }
 }

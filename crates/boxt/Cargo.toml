@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 anstream.workspace = true
 clap.workspace = true
+terminal_size.workspace = true
 boxt-collector = { path = "../boxt-collector" }
 boxt-render = { path = "../boxt-render" }
 boxt-rules = { path = "../boxt-rules" }
