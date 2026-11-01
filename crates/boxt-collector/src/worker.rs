@@ -65,6 +65,7 @@ pub fn run() -> ExitCode {
         }
     };
 
+    os::commit_stack();
     if let Err(e) = set_cap(&settings) {
         eprintln!("boxt worker: cannot set its memory cap: {e}");
         return ExitCode::from(STARTUP_CAP_EXIT as u8);

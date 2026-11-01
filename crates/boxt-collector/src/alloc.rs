@@ -12,8 +12,21 @@ pub(crate) fn enter_worker() {
     IN_WORKER.store(true, Ordering::SeqCst);
 }
 
+#[cfg(not(windows))]
 fn allocation_failed() -> ! {
     std::process::exit(WORKER_MEMORY_CAP_EXIT)
+}
+
+/// `exit` would run the C runtime's exit path and DLL detach code, which allocate; under the
+/// Job Object's memory limit those allocations fail and raise an exception, which reads as a
+/// crash. Terminating skips all of it.
+#[cfg(windows)]
+fn allocation_failed() -> ! {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+    unsafe {
+        TerminateProcess(GetCurrentProcess(), WORKER_MEMORY_CAP_EXIT as u32);
+    }
+    std::process::abort()
 }
 
 fn checked(ptr: *mut u8) -> *mut u8 {

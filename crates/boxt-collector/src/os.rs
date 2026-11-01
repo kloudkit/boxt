@@ -120,3 +120,19 @@ pub fn kill_workers_on_exit() -> io::Result<()> {
 pub fn kill_workers_on_exit() -> io::Result<()> {
     Ok(())
 }
+
+#[cfg(windows)]
+const STACK_COMMIT: usize = 512 * 1024;
+
+/// Commits the first 512 KiB of the thread's stack before the memory cap is set. The Job
+/// Object's limit counts committed stack, so a stack page first touched at the cap would
+/// fail as `STATUS_STACK_OVERFLOW`, a crash, instead of the cap's own exit.
+#[cfg(windows)]
+#[inline(never)]
+pub fn commit_stack() {
+    let probe = [0u8; STACK_COMMIT];
+    std::hint::black_box(&probe);
+}
+
+#[cfg(not(windows))]
+pub fn commit_stack() {}
