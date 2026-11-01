@@ -74,7 +74,7 @@ fn target_rows(report: &str) -> Vec<String> {
 
 fn shown(path: &Path) -> String {
     let native: PathBuf = path.components().collect();
-    boxt_render::escape(&boxt_collector::path::text_from_path(&native))
+    boxt_render::escape(&boxt_collector::path::display_text_from_path(&native))
 }
 
 fn names_project_file(report: &str, path: &Path) -> bool {

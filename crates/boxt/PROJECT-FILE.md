@@ -17,7 +17,8 @@ same way. Its version is `PROJECT_FILE_VERSION` in `boxt-core/src/version.rs`, n
 The report names the file used, `none found`, or the path given with `(named by --project)`.
 A found path is the folder where the file was found, the first input's folder or any folder
 above it, joined with the file's name. The search starts from the first input made
-absolute, with `..` and `.` resolved by name, not by following links. The hidden `__collect`, `__bench` and
+absolute, with `..` and `.` resolved by name, not by following links. On Windows every
+shown path uses `/` as its separator, like finding locations. The hidden `__collect`, `__bench` and
 `__measure` commands and the worker never read a project file.
 
 ## Format

@@ -8,7 +8,7 @@ use boxt_collector::boxt_core::limits::{LIMITS, LimitError, LimitName, Limits};
 use boxt_collector::boxt_core::verdict::{IdError, ProjectFile, TargetId};
 use boxt_collector::boxt_core::version::{PROJECT_FILE_VERSION, SchemaVersion, UnsupportedVersion};
 use boxt_collector::boxt_core::{SortedVec, Text};
-use boxt_collector::path::text_from_path;
+use boxt_collector::path::display_text_from_path;
 use boxt_render::escape;
 use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -94,7 +94,7 @@ pub enum Problem {
 }
 
 fn shown(path: &Path) -> String {
-    escape(&text_from_path(path))
+    escape(&display_text_from_path(path))
 }
 
 fn quoted(s: &str) -> String {
@@ -194,7 +194,7 @@ pub fn load(first_input: &Path, named: Option<&Path>) -> Result<Project, Project
     if let Some(path) = named {
         return Ok(Project {
             file: ProjectFile::Named {
-                path: text_from_path(path),
+                path: display_text_from_path(path),
             },
             settings: read(path)?,
             vcs_root: None,
@@ -215,7 +215,7 @@ pub fn load(first_input: &Path, named: Option<&Path>) -> Result<Project, Project
         .is_some_and(|(folder, root)| folder != root && root.starts_with(folder));
     Ok(Project {
         file: ProjectFile::Found {
-            path: text_from_path(&found),
+            path: display_text_from_path(&found),
             above_vcs_root,
         },
         settings: read(&found)?,

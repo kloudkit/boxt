@@ -17,6 +17,20 @@ pub fn text_from_path(path: &Path) -> Text {
     Text::from_wide(&path.as_os_str().encode_wide().collect::<Vec<u16>>())
 }
 
+pub fn display_text_from_path(path: &Path) -> Text {
+    let text = text_from_path(path);
+    if cfg!(windows) {
+        Text::from_bytes(
+            text.into_bytes()
+                .into_iter()
+                .map(|b| if b == b'\\' { b'/' } else { b })
+                .collect(),
+        )
+    } else {
+        text
+    }
+}
+
 #[cfg(unix)]
 pub fn path_from_text(text: &Text) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
@@ -136,6 +150,20 @@ mod tests {
             base: Text::from(base),
             pattern: Text::from(pattern),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_shown_windows_path_uses_forward_slashes() {
+        let shown = display_text_from_path(Path::new(r"C:\Users\me\repo\boxt.yaml"));
+        assert_eq!(shown.as_str(), Some("C:/Users/me/repo/boxt.yaml"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shown_unix_path_is_unchanged() {
+        let shown = display_text_from_path(Path::new("/home/me/a\\b/boxt.yaml"));
+        assert_eq!(shown.as_str(), Some("/home/me/a\\b/boxt.yaml"));
     }
 
     #[test]
