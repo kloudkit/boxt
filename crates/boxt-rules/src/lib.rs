@@ -31,6 +31,10 @@ pub fn embedded() -> &'static [u8] {
     EMBEDDED
 }
 
+pub fn prepare() -> Result<Corpus, LoadError> {
+    load_tar(embedded())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CorpusHash(pub [u8; 32]);
 

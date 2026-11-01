@@ -8,6 +8,14 @@ pub const HOST_DEPENDENT_TEXT: &str = "Some files were ended by a time or memory
 
 pub const HOST_DEPENDENT_MARK: &str = "may differ on another host";
 
+pub const PROJECT_FILE: &str = "project file";
+
+pub const PROJECT_FILE_NONE_FOUND: &str = "none found";
+
+pub const PROJECT_FILE_NAMED: &str = "named by --project";
+
+pub const ABOVE_VCS_ROOT_TEXT: &str = "The project file lies above the version-control root of the first input; check that it is meant for this tree.";
+
 pub fn macro_table_cut() -> String {
     format!(
         "macro definitions past the {} limit were not expanded",

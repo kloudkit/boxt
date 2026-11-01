@@ -1031,7 +1031,9 @@ are:
   1.0 is re-recorded instead, because no output has shipped (as `RULE_SCHEMA_VERSION` 1.0
   was). Story 1.12 added `Result.groups`, `Result.no_reader` and `TargetVerdict.allowed`,
   and replaced `NotCheckedEntry::Region` with the per-file `Regions`; by the same operator
-  decision 1.0 is re-recorded once more rather than bumped. `RULE_SCHEMA_VERSION` stays
+  decision 1.0 is re-recorded once more rather than bumped. Story 2.1 added
+  `Result.project_file`; by the same operator decision 1.0 is re-recorded, since nothing
+  has shipped. `RULE_SCHEMA_VERSION` stays
   1.0, since no `Fact` changed, and its snapshot is unchanged. The worker messages and `Job`
   carry no version: both ends are the same binary.
 
@@ -1056,19 +1058,22 @@ are:
 
 ### Building the result (FR-21..FR-26, Story 1.9)
 
-`boxt_verdict::build(&VerdictInput) -> Result<Result, VerdictError>` is the one place a
-`Result` is built. `VerdictInput` holds core types only: the named `targets`, the loaded
-`profiles`, the run's `files`, the rules' `findings` and `observations`,
+`boxt_verdict::prepare(profiles, targets) -> Result<Prepared, VerdictError>` resolves the
+named `targets` against the loaded `profiles` once, before any job is dispatched.
+`boxt_verdict::build(&Prepared, &VerdictInput) -> Result<Result, VerdictError>` is the one
+place a `Result` is built, and does not resolve targets again. `VerdictInput` holds core
+types only: the run's `files`, the rules' `findings` and `observations`,
 `macro_tables_cut`, `host_dependent_trees`, `roots` (the absolute form of each input,
-indexed by `InputRef.index`, supplied by the caller: verdict reads no filesystem) and
-`compile_database_used`. Verdict never sees facts.
+indexed by `InputRef.index`, supplied by the caller: verdict reads no filesystem),
+`compile_database_used` and `project_file` (copied into `Result.project_file`). Verdict
+never sees facts.
 
 - **Targets (FR-22).** With no target named every profile applies, in `TargetId` order;
   otherwise exactly the named ones. An unknown id is
   `VerdictError::UnknownTarget{id, known}`, `known` every loaded id. A run with no `Read`
-  outcome is `VerdictError::NothingRead` (FR-25). Targets are checked first.
-  `boxt_verdict::resolve_targets` is that same resolution, public, so the bin refuses an
-  unknown target before it scans anything; the bin maps both errors to exit 2.
+  outcome is `VerdictError::NothingRead` (FR-25). Targets are checked by `prepare`, so the
+  bin refuses an unknown target before it scans anything; `build` checks `NothingRead`.
+  The bin maps both errors to exit 2.
 - **Tiers (FR-21).** For a target and a finding, the tier is the worst `BehaviourTier.tier`
   over every control listing the behaviour, or `Ready` when the profile allows it. A
   behaviour neither listed nor allowed is unmapped: it goes into `TargetVerdict.unmapped`,

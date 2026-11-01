@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use boxt_collector::boxt_core::fact::Fact;
 use boxt_collector::boxt_core::limits::Limits;
 use boxt_collector::boxt_core::settings::Settings;
-use boxt_collector::boxt_core::verdict::Result;
+use boxt_collector::boxt_core::verdict::{ProjectFile, Result};
 use boxt_collector::boxt_core::{SortedVec, Text};
 use boxt_collector::path::text_from_path;
 use boxt_collector::worker::WORKER_SUBCOMMAND;
 use boxt_collector::{RunOptions, run_with};
-use boxt_rules::{embedded, evaluate, load_tar};
+use boxt_rules::{evaluate, prepare};
 use boxt_verdict::{VerdictInput, build};
 
 pub fn seed_dir() -> PathBuf {
@@ -50,18 +50,21 @@ pub fn verdict(inputs: &[PathBuf]) -> Result {
         .into_iter()
         .flat_map(|file| file.facts)
         .collect();
-    let corpus = load_tar(embedded()).unwrap();
+    let corpus = prepare().unwrap();
+    let prepared = boxt_verdict::prepare(&corpus.profiles, &SortedVec::new()).unwrap();
     let matched = evaluate(&corpus, &facts);
-    build(&VerdictInput {
-        targets: &SortedVec::new(),
-        profiles: &corpus.profiles,
-        files: &collected.files,
-        findings: &matched.findings,
-        observations: &matched.observations,
-        macro_tables_cut: &collected.macro_tables_cut,
-        host_dependent_trees: &collected.host_dependent_trees,
-        roots: &roots,
-        compile_database_used: false,
-    })
+    build(
+        &prepared,
+        &VerdictInput {
+            files: &collected.files,
+            findings: &matched.findings,
+            observations: &matched.observations,
+            macro_tables_cut: &collected.macro_tables_cut,
+            host_dependent_trees: &collected.host_dependent_trees,
+            roots: &roots,
+            compile_database_used: false,
+            project_file: &ProjectFile::NoneFound,
+        },
+    )
     .unwrap()
 }

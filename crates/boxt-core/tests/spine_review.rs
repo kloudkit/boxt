@@ -35,7 +35,7 @@ use boxt_core::settings::{CompileDatabaseSetting, Encoding, Settings, WorkerSett
 use boxt_core::shell::{self, is_shell_interpreter};
 use boxt_core::verdict::{
     BehaviourId, Confidence, CoverageError, Evidence, EvidenceId, Finding, Group, GroupKey,
-    LineRange, NotCheckedEntry, Observation, ReportedFinding, Result as VerdictResult,
+    LineRange, NotCheckedEntry, Observation, ProjectFile, ReportedFinding, Result as VerdictResult,
     RuleCoverage, RuleId, RuleSection, TargetId, TargetVerdict, Tier, TierRange,
 };
 use boxt_core::version::{RULE_SCHEMA_VERSION, SchemaVersion, Versions};
@@ -1318,6 +1318,10 @@ fn sample_result() -> VerdictResult {
     .with_lines(4);
     VerdictResult {
         versions: Versions::CURRENT,
+        project_file: ProjectFile::Found {
+            path: Text::from("/repo/boxt.yaml"),
+            above_vcs_root: true,
+        },
         input_scope: InputScope::SourceOnly,
         input_scope_text: input_scope::text(InputScope::SourceOnly, true),
         counts: verdict_counts([&outcome.file]),

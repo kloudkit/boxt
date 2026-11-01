@@ -1,6 +1,6 @@
 use std::io::{IsTerminal, Write};
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -17,10 +17,14 @@ use boxt_collector::pool::{self, PoolConfig, default_jobs};
 use boxt_collector::worker::WORKER_SUBCOMMAND;
 use boxt_collector::{Collected, RunOptions, RunStats};
 use boxt_render::TerminalOptions;
-use boxt_rules::{embedded, evaluate, load_tar};
-use boxt_verdict::{VerdictInput, build, resolve_targets};
+use boxt_rules::evaluate;
+use boxt_verdict::{VerdictInput, build};
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
+
+use crate::project::FileSettings;
+
+mod project;
 
 #[global_allocator]
 static ALLOCATOR: CapAllocator = CapAllocator;
@@ -67,6 +71,12 @@ struct Cli {
         help = "List every file not checked, including each file no reader understands"
     )]
     all: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "The project file to read settings from; with none named, the nearest boxt.yaml or .boxt.yaml at or above the first input is used"
+    )]
+    project: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -144,7 +154,7 @@ fn main() -> ExitCode {
             measure,
             list,
         }) => collect(&inputs, jobs, &limits, measure, list),
-        None => match report(&cli.inputs, &cli.targets, cli.jobs, &cli.limits, cli.all) {
+        None => match report(&cli) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("boxt: {e}");
@@ -154,50 +164,62 @@ fn main() -> ExitCode {
     }
 }
 
-fn settings(
-    inputs: &[PathBuf],
-    targets: &[String],
-    jobs: Option<NonZeroU32>,
-    limits: &[String],
-) -> Result<Settings, String> {
-    let targets = targets
-        .iter()
-        .map(|t| TargetId::new(t.as_str()).map_err(|e| format!("--target {t}: {e}")))
-        .collect::<Result<SortedVec<_>, _>>()?;
+fn settings(cli: &Cli, file: &FileSettings) -> Result<Settings, String> {
+    let targets = if cli.targets.is_empty() {
+        file.targets.clone().unwrap_or_default()
+    } else {
+        cli.targets
+            .iter()
+            .map(|t| TargetId::new(t.as_str()).map_err(|e| format!("--target {t}: {e}")))
+            .collect::<Result<SortedVec<_>, _>>()?
+    };
+    let mut limits = Limits::default();
+    for &(name, value) in &file.limits {
+        limits.set(name, value).map_err(|e| e.to_string())?;
+    }
+    apply_limits(&mut limits, &cli.limits)?;
+    limits.validate().map_err(|e| e.to_string())?;
     Ok(Settings {
-        inputs: inputs.iter().map(|p| text_from_path(p)).collect(),
+        inputs: cli.inputs.iter().map(|p| text_from_path(p)).collect(),
         targets,
-        limits: parse_limits(limits)?,
+        limits,
         encodings: Vec::new(),
         excludes: Vec::new(),
         ignored_macros: Default::default(),
-        jobs,
+        jobs: cli.jobs.or(file.jobs),
         compile_database: None,
     })
 }
 
-fn report(
-    inputs: &[PathBuf],
-    targets: &[String],
-    jobs: Option<NonZeroU32>,
-    limits: &[String],
-    all: bool,
-) -> Result<(), String> {
-    let settings = settings(inputs, targets, jobs, limits)?;
+fn report(cli: &Cli) -> Result<(), String> {
+    let first: &Path = cli.inputs.first().ok_or("no input given")?;
+    let project = project::load(first, cli.project.as_deref()).map_err(|e| e.to_string())?;
+    if let Some(warning) = project.warning() {
+        eprintln!("boxt: warning: {warning}");
+    }
+    let settings = settings(cli, &project.settings)?;
     #[cfg(feature = "fault-fixtures")]
-    if inputs.iter().any(|p| {
+    if cli.inputs.iter().any(|p| {
         p.file_name()
             .is_some_and(|n| n == "boxt-fixture-main-panic")
     }) {
         panic!("fixture panic in the main process");
     }
-    let roots = inputs
+    let roots = cli
+        .inputs
         .iter()
         .map(|p| std::path::absolute(p).map(|a| text_from_path(&a)))
         .collect::<Result<Vec<Text>, _>>()
         .map_err(|e| format!("cannot make an input path absolute: {e}"))?;
-    let corpus = load_tar(embedded()).map_err(|e| e.to_string())?;
-    resolve_targets(&settings.targets, &corpus.profiles).map_err(|e| e.to_string())?;
+    let corpus = boxt_rules::prepare().map_err(|e| e.to_string())?;
+    let prepared = boxt_verdict::prepare(&corpus.profiles, &settings.targets).map_err(|e| {
+        match project.file.path() {
+            Some(path) if cli.targets.is_empty() && project.settings.targets.is_some() => {
+                format!("{}: targets: {e}", boxt_render::escape(path))
+            }
+            _ => e.to_string(),
+        }
+    })?;
     let collected = boxt_collector::run(&settings).map_err(|e| e.to_string())?;
     let facts: Vec<Fact> = collected
         .facts
@@ -205,17 +227,19 @@ fn report(
         .flat_map(|file| file.facts)
         .collect();
     let matched = evaluate(&corpus, &facts);
-    let result = build(&VerdictInput {
-        targets: &settings.targets,
-        profiles: &corpus.profiles,
-        files: &collected.files,
-        findings: &matched.findings,
-        observations: &matched.observations,
-        macro_tables_cut: &collected.macro_tables_cut,
-        host_dependent_trees: &collected.host_dependent_trees,
-        roots: &roots,
-        compile_database_used: false,
-    })
+    let result = build(
+        &prepared,
+        &VerdictInput {
+            files: &collected.files,
+            findings: &matched.findings,
+            observations: &matched.observations,
+            macro_tables_cut: &collected.macro_tables_cut,
+            host_dependent_trees: &collected.host_dependent_trees,
+            roots: &roots,
+            compile_database_used: false,
+            project_file: &project.file,
+        },
+    )
     .map_err(|e| e.to_string())?;
     let stdout = std::io::stdout();
     let styled = anstream::AutoStream::choice(&stdout) != anstream::ColorChoice::Never;
@@ -224,7 +248,7 @@ fn report(
         &TerminalOptions {
             styled,
             width: terminal_width(&stdout),
-            all,
+            all: cli.all,
         },
     );
     let mut out = anstream::AutoStream::auto(stdout.lock());
@@ -242,6 +266,12 @@ fn terminal_width(stdout: &std::io::Stdout) -> usize {
 
 fn parse_limits(given: &[String]) -> Result<Limits, String> {
     let mut limits = Limits::default();
+    apply_limits(&mut limits, given)?;
+    limits.validate().map_err(|e| e.to_string())?;
+    Ok(limits)
+}
+
+fn apply_limits(limits: &mut Limits, given: &[String]) -> Result<(), String> {
     for spec in given {
         let (name, value) = spec
             .split_once('=')
@@ -252,8 +282,7 @@ fn parse_limits(given: &[String]) -> Result<Limits, String> {
             .map_err(|_| format!("--limit {spec}: not a whole number"))?;
         limits.set(limit, value).map_err(|e| e.to_string())?;
     }
-    limits.validate().map_err(|e| e.to_string())?;
-    Ok(limits)
+    Ok(())
 }
 
 fn collect(
@@ -539,5 +568,48 @@ fn median(times: &mut [Duration]) -> Duration {
         (times[mid - 1] + times[mid]) / 2
     } else {
         times[mid]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flag_beats_the_file_setting_by_setting_and_a_target_list_replaces_the_file_list() {
+        let file = project::parse(
+            "schema: \"1.0\"\ntargets: [docker-default]\njobs: 3\nlimits: {work: 5, memory: 7}\n",
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from([
+            "boxt",
+            "src",
+            "--target",
+            "rootless-podman",
+            "--limit",
+            "memory=1",
+        ])
+        .unwrap();
+        let merged = settings(&cli, &file).unwrap();
+        let targets: Vec<&str> = merged.targets.iter().map(|t| t.as_str()).collect();
+        assert_eq!(targets, ["rootless-podman"]);
+        assert_eq!(merged.limits.get(LimitName::Work), 5);
+        assert_eq!(merged.limits.get(LimitName::Memory), 1);
+        assert_eq!(merged.jobs, NonZeroU32::new(3));
+        let flags_only = Cli::try_parse_from(["boxt", "src", "--jobs", "2"]).unwrap();
+        let merged = settings(&flags_only, &file).unwrap();
+        let targets: Vec<&str> = merged.targets.iter().map(|t| t.as_str()).collect();
+        assert_eq!(targets, ["docker-default"]);
+        assert_eq!(merged.jobs, NonZeroU32::new(2));
+        assert_eq!(merged.limits.get(LimitName::Memory), 7);
+    }
+
+    #[test]
+    fn with_no_file_the_defaults_apply() {
+        let cli = Cli::try_parse_from(["boxt", "src"]).unwrap();
+        let merged = settings(&cli, &FileSettings::default()).unwrap();
+        assert!(merged.targets.is_empty());
+        assert_eq!(merged.limits, Limits::default());
+        assert_eq!(merged.jobs, None);
     }
 }

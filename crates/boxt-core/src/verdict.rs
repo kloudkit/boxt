@@ -441,8 +441,36 @@ pub struct Group {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectFile {
+    NoneFound,
+    Found { path: Text, above_vcs_root: bool },
+    Named { path: Text },
+}
+
+impl ProjectFile {
+    pub fn path(&self) -> Option<&Text> {
+        match self {
+            ProjectFile::NoneFound => None,
+            ProjectFile::Found { path, .. } | ProjectFile::Named { path } => Some(path),
+        }
+    }
+
+    pub fn above_vcs_root(&self) -> bool {
+        matches!(
+            self,
+            ProjectFile::Found {
+                above_vcs_root: true,
+                ..
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Result {
     pub versions: Versions,
+    pub project_file: ProjectFile,
     pub input_scope: InputScope,
     pub input_scope_text: String,
     pub counts: VerdictCounts,

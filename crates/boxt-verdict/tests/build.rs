@@ -10,11 +10,11 @@ use boxt_verdict::boxt_core::outcome::{
 };
 use boxt_verdict::boxt_core::verdict::{
     BehaviourId, BehaviourTier, Confidence, Control, ControlId, Evidence, EvidenceId, Finding,
-    GroupKey, LineRange, NotCheckedEntry, Observation, Profile, Result, RuleId, TargetId, Tier,
-    TierRange,
+    GroupKey, LineRange, NotCheckedEntry, Observation, Profile, ProjectFile, Result, RuleId,
+    TargetId, Tier, TierRange,
 };
 use boxt_verdict::boxt_core::{SortedVec, Text};
-use boxt_verdict::{VerdictError, VerdictInput, build};
+use boxt_verdict::{VerdictError, VerdictInput, build, prepare};
 
 fn id(s: &str) -> TargetId {
     TargetId::new(s).unwrap()
@@ -149,6 +149,7 @@ struct Run {
     roots: Vec<Text>,
     host_dependent_trees: SortedVec<u32>,
     compile_database_used: bool,
+    project_file: ProjectFile,
 }
 
 impl Run {
@@ -162,22 +163,26 @@ impl Run {
             roots: vec![Text::from("/src")],
             host_dependent_trees: SortedVec::new(),
             compile_database_used: false,
+            project_file: ProjectFile::NoneFound,
         }
     }
 
     fn build(&self) -> std::result::Result<Result, VerdictError> {
         let none = SortedVec::new();
-        build(&VerdictInput {
-            targets: &self.targets,
-            profiles: &self.profiles,
-            files: &self.files,
-            findings: &self.findings,
-            observations: &self.observations,
-            macro_tables_cut: &none,
-            host_dependent_trees: &self.host_dependent_trees,
-            roots: &self.roots,
-            compile_database_used: self.compile_database_used,
-        })
+        let prepared = prepare(&self.profiles, &self.targets)?;
+        build(
+            &prepared,
+            &VerdictInput {
+                files: &self.files,
+                findings: &self.findings,
+                observations: &self.observations,
+                macro_tables_cut: &none,
+                host_dependent_trees: &self.host_dependent_trees,
+                roots: &self.roots,
+                compile_database_used: self.compile_database_used,
+                project_file: &self.project_file,
+            },
+        )
     }
 }
 
@@ -214,7 +219,7 @@ fn an_unknown_target_names_every_known_id() {
     let mut run = Run::new(Vec::new());
     run.targets = vec![id("docker")].into();
     assert_eq!(
-        run.build(),
+        prepare(&run.profiles, &run.targets),
         Err(VerdictError::UnknownTarget {
             id: id("docker"),
             known: vec![
@@ -226,6 +231,37 @@ fn an_unknown_target_names_every_known_id() {
             .into(),
         })
     );
+}
+
+#[test]
+fn prepare_refuses_an_unknown_target_before_any_file_is_read() {
+    let mut run = Run::new(Vec::new());
+    run.targets = vec![id("docker")].into();
+    assert!(matches!(
+        prepare(&run.profiles, &run.targets),
+        Err(VerdictError::UnknownTarget { .. })
+    ));
+}
+
+#[test]
+fn prepared_profiles_are_the_named_targets_in_target_id_order() {
+    let mut run = Run::new(Vec::new());
+    run.targets = vec![id("rootless-podman"), id("docker-default")].into();
+    let prepared = prepare(&run.profiles, &run.targets).unwrap();
+    let ids: Vec<&str> = prepared.profiles().iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["docker-default", "rootless-podman"]);
+}
+
+#[test]
+fn the_result_carries_the_project_file() {
+    let mut run = Run::new(Vec::new());
+    assert_eq!(run.build().unwrap().project_file, ProjectFile::NoneFound);
+    let found = ProjectFile::Found {
+        path: Text::from("/repo/boxt.yaml"),
+        above_vcs_root: true,
+    };
+    run.project_file = found.clone();
+    assert_eq!(run.build().unwrap().project_file, found);
 }
 
 #[test]

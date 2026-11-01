@@ -2,7 +2,7 @@ mod common;
 
 use std::time::{Duration, SystemTime};
 
-use boxt_rules::{CorpusHash, Origin, corpus_hash, embedded, load_tar, pack};
+use boxt_rules::{CorpusHash, Origin, corpus_hash, embedded, load_tar, pack, prepare};
 
 use common::*;
 
@@ -10,6 +10,11 @@ use common::*;
 fn the_embedded_corpus_loads_with_no_errors() {
     let corpus = load_tar(embedded()).unwrap();
     assert_eq!(corpus.origin, Origin::Corpus);
+}
+
+#[test]
+fn prepare_loads_and_validates_the_embedded_corpus() {
+    assert_eq!(prepare().unwrap(), load_tar(embedded()).unwrap());
 }
 
 #[test]

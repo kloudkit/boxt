@@ -11,8 +11,8 @@ use boxt_render::boxt_core::outcome::{
 };
 use boxt_render::boxt_core::verdict::{
     BehaviourId, Confidence, Evidence, EvidenceId, Finding, Group, GroupKey, LineRange,
-    NotCheckedEntry, ReportedFinding, Result, RuleId, RuleSection, TargetId, TargetVerdict, Tier,
-    TierRange,
+    NotCheckedEntry, ProjectFile, ReportedFinding, Result, RuleId, RuleSection, TargetId,
+    TargetVerdict, Tier, TierRange,
 };
 use boxt_render::boxt_core::version::Versions;
 use boxt_render::boxt_core::{SortedVec, Text};
@@ -97,6 +97,7 @@ fn sample(host_dependent: bool) -> Result {
     });
     Result {
         versions: Versions::CURRENT,
+        project_file: ProjectFile::NoneFound,
         input_scope: InputScope::SourceOnly,
         input_scope_text: input_scope::text(InputScope::SourceOnly, false),
         counts: VerdictCounts {
@@ -208,7 +209,8 @@ fn sections_come_in_order() {
         "│ Some files were ended by a time or memory limit of this host;",
         "\n  docker-default  [needs Windows]  1 found\n",
         "\n  kubernetes-restricted  [needs code change … blocked]  1 found · 1 unmapped\n",
-        "\n\n  5 files read · 2 not checked · 0.8% of source lines not checked\n\n",
+        "\n\n  5 files read · 2 not checked · 0.8% of source lines not checked\n",
+        "\n  project file: none found\n\n",
         "\n Findings   ● found   ○ suspected\n\n",
         "\n ▌setuid  1 found",
         " identity/setuid\n   fix  Start as the user.\n\n",
@@ -249,6 +251,80 @@ fn the_host_note_shows_only_when_host_dependent() {
     let marker = "Some files were ended by a time or memory limit";
     assert!(terminal(&sample(true), false).contains(marker));
     assert!(!terminal(&sample(false), false).contains(marker));
+}
+
+fn with_project_file(project_file: ProjectFile) -> String {
+    let mut result = sample(false);
+    result.project_file = project_file;
+    terminal(&result, false)
+}
+
+#[test]
+fn the_project_file_line_sits_under_the_files_read_line() {
+    let none = with_project_file(ProjectFile::NoneFound);
+    assert!(
+        none.contains(
+            "\n  5 files read · 2 not checked · 0.8% of source lines not checked\n  project file: none found\n\n"
+        ),
+        "{none}"
+    );
+    let found = with_project_file(ProjectFile::Found {
+        path: Text::from("/home/dev/repo/boxt.yaml"),
+        above_vcs_root: false,
+    });
+    assert!(
+        found.contains("not checked\n  project file: /home/dev/repo/boxt.yaml\n\n"),
+        "{found}"
+    );
+    let named = with_project_file(ProjectFile::Named {
+        path: Text::from("ci/scan.yaml"),
+    });
+    assert!(
+        named.contains("not checked\n  project file: ci/scan.yaml (named by --project)\n\n"),
+        "{named}"
+    );
+}
+
+#[test]
+fn a_project_file_above_the_vcs_root_is_noted_in_the_header_box() {
+    let note = "│ The project file lies above the version-control root of the first input;";
+    let below = with_project_file(ProjectFile::Found {
+        path: Text::from("/home/dev/boxt.yaml"),
+        above_vcs_root: false,
+    });
+    assert!(!below.contains(note), "{below}");
+    let above = with_project_file(ProjectFile::Found {
+        path: Text::from("/home/dev/boxt.yaml"),
+        above_vcs_root: true,
+    });
+    let lines = lines_of(&above);
+    let at = lines.iter().position(|l| l.starts_with(note)).unwrap();
+    let close = lines.iter().position(|l| l.starts_with('└')).unwrap();
+    assert!(at < close, "{above}");
+    assert!(
+        above.contains("project file: /home/dev/boxt.yaml\n"),
+        "{above}"
+    );
+    let mut result = sample(false);
+    result.project_file = ProjectFile::Found {
+        path: Text::from("/home/dev/boxt.yaml"),
+        above_vcs_root: true,
+    };
+    let styled = terminal(&result, true);
+    assert!(styled.contains("\x1b[33mThe\x1b[0m"), "{styled:?}");
+}
+
+#[test]
+fn a_hostile_project_file_path_is_escaped() {
+    let report = with_project_file(ProjectFile::Found {
+        path: Text::from_bytes(b"/r\x1b[31m/\xff\xe2\x80\xaeboxt.yaml".to_vec()),
+        above_vcs_root: false,
+    });
+    assert!(
+        report.contains("project file: /r\\x1b[31m/\\xff\\u{202e}boxt.yaml\n"),
+        "{report}"
+    );
+    assert!(!report.contains('\x1b'), "{report}");
 }
 
 #[test]
@@ -828,6 +904,7 @@ const SEED_GOLDEN: &str = r#"
   kubernetes-restricted   [blocked]       7           1         –
 
   5 files read · 0 not checked · 0.0% of source lines not checked
+  project file: none found
 
 ────────────────────────────────────────────────────────────────────────────────
  Findings   ● found   ○ suspected
@@ -1437,6 +1514,7 @@ fn targets_print_as_one_aligned_table() {
   rootless-podman           [needs Windows]       7           1         –
 
   5 files read · 0 not checked · 0.0% of source lines not checked
+  project file: none found
 
 {}
  Findings   ● found   ○ suspected
@@ -1635,7 +1713,7 @@ fn fixes_and_findings_are_separated_by_one_blank_line() {
         "     guard  #ifdef _WIN32\n\n   ● registry.c:10",
         "     id-change-call · bdb745a285af-1\n\nNot checked\n",
         "─\n Findings   ● found   ○ suspected\n\n ▌low-port",
-        "\n\n  5 files read · 0 not checked · 0.0% of source lines not checked\n\n─",
+        "\n\n  5 files read · 0 not checked · 0.0% of source lines not checked\n  project file: none found\n\n─",
     ] {
         assert!(report.contains(gap), "{gap:?} not in\n{report}");
     }

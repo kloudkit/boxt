@@ -14,15 +14,13 @@ use std::fmt;
 
 use boxt_core::message::CollectedFile;
 use boxt_core::outcome::{FileOutcome, sm3_share, verdict_counts};
-use boxt_core::verdict::{Finding, Observation, Profile, Result, TargetId};
+use boxt_core::verdict::{Finding, Observation, Profile, ProjectFile, Result, TargetId};
 use boxt_core::version::Versions;
 use boxt_core::{SortedVec, Text, input_scope};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy)]
 pub struct VerdictInput<'a> {
-    pub targets: &'a SortedVec<TargetId>,
-    pub profiles: &'a [Profile],
     pub files: &'a SortedVec<CollectedFile>,
     pub findings: &'a SortedVec<Finding>,
     pub observations: &'a SortedVec<Observation>,
@@ -30,6 +28,18 @@ pub struct VerdictInput<'a> {
     pub host_dependent_trees: &'a SortedVec<u32>,
     pub roots: &'a [Text],
     pub compile_database_used: bool,
+    pub project_file: &'a ProjectFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prepared<'a> {
+    profiles: Vec<&'a Profile>,
+}
+
+impl<'a> Prepared<'a> {
+    pub fn profiles(&self) -> &[&'a Profile] {
+        &self.profiles
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,15 +69,19 @@ impl fmt::Display for VerdictError {
 
 impl std::error::Error for VerdictError {}
 
-pub fn resolve_targets<'a>(
-    named: &SortedVec<TargetId>,
+pub fn prepare<'a>(
     profiles: &'a [Profile],
-) -> std::result::Result<Vec<&'a Profile>, VerdictError> {
-    targets::resolve(named, profiles)
+    targets: &SortedVec<TargetId>,
+) -> std::result::Result<Prepared<'a>, VerdictError> {
+    Ok(Prepared {
+        profiles: targets::resolve(targets, profiles)?,
+    })
 }
 
-pub fn build(input: &VerdictInput<'_>) -> std::result::Result<Result, VerdictError> {
-    let profiles = targets::resolve(input.targets, input.profiles)?;
+pub fn build(
+    prepared: &Prepared<'_>,
+    input: &VerdictInput<'_>,
+) -> std::result::Result<Result, VerdictError> {
     if !input
         .files
         .iter()
@@ -82,13 +96,15 @@ pub fn build(input: &VerdictInput<'_>) -> std::result::Result<Result, VerdictErr
     let not_checked = not_checked::entries(input.files, input.observations);
     Ok(Result {
         versions: Versions::CURRENT,
+        project_file: input.project_file.clone(),
         input_scope,
         input_scope_text: input_scope::text(input_scope, input.compile_database_used),
         counts: verdict_counts(input.files.iter().map(|f| &f.outcome.file)),
         sm3: sm3_share(input.files.iter()),
         macro_tables_cut: input.macro_tables_cut.clone(),
         host_dependent,
-        targets: profiles
+        targets: prepared
+            .profiles
             .iter()
             .map(|p| targets::verdict(p, input.findings))
             .collect(),

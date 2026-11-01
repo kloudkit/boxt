@@ -9,7 +9,7 @@ use boxt_core::location::{Location, Scope};
 use boxt_core::outcome::{Count, Details, FileOutcome, NotCheckedReason, Outcome, Sm3};
 use boxt_core::settings::Encoding;
 use boxt_core::verdict::{
-    Confidence, Group, GroupKey, LineRange, NotCheckedEntry, ReportedFinding, Result,
+    Confidence, Group, GroupKey, LineRange, NotCheckedEntry, ProjectFile, ReportedFinding, Result,
     TargetVerdict, Tier, TierRange,
 };
 use unicode_width::UnicodeWidthStr;
@@ -95,6 +95,9 @@ pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     let mut header = vec![Para::new().text(&result.input_scope_text, YELLOW)];
     if result.host_dependent {
         header.push(Para::new().text(labels::HOST_DEPENDENT_TEXT, YELLOW));
+    }
+    if result.project_file.above_vcs_root() {
+        header.push(Para::new().text(labels::ABOVE_VCS_ROOT_TEXT, YELLOW));
     }
     boxed(&mut out, &p, width, YELLOW, &header);
     out.push('\n');
@@ -291,6 +294,26 @@ fn targets(out: &mut String, p: &Painter, width: usize, result: &Result) {
         DIM,
     );
     emit(out, p, width, &files, INDENT, "    ");
+    emit(
+        out,
+        p,
+        width,
+        &project_file(&result.project_file),
+        INDENT,
+        "    ",
+    );
+}
+
+fn project_file(project_file: &ProjectFile) -> Para {
+    let para = Para::new().text(&format!("{}:", labels::PROJECT_FILE), DIM);
+    match project_file {
+        ProjectFile::NoneFound => para.text(&format!(" {}", labels::PROJECT_FILE_NONE_FOUND), DIM),
+        ProjectFile::Found { path, .. } => para.plain(" ").value(&escape(path), DIM),
+        ProjectFile::Named { path } => para
+            .plain(" ")
+            .value(&escape(path), DIM)
+            .text(&format!(" ({})", labels::PROJECT_FILE_NAMED), DIM),
+    }
 }
 
 fn aligned(text: &str, width: usize, right: bool) -> String {

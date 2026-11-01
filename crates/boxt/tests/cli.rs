@@ -432,6 +432,7 @@ fn help_describes_every_argument_and_flag() {
         ("--jobs <N>", "worker processes"),
         ("--limit <NAME=VALUE>", "Change one limit"),
         ("--all", "no reader understands"),
+        ("--project <FILE>", "project file"),
         ("--help", "Print help"),
         ("--version", "Print version"),
     ] {

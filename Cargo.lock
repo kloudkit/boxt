@@ -97,6 +97,8 @@ dependencies = [
  "boxt-rules",
  "boxt-verdict",
  "clap",
+ "serde",
+ "serde-saphyr",
  "serde_json",
  "terminal_size",
 ]
