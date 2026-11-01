@@ -70,7 +70,7 @@ fn the_first_answer_names_scope_verdict_findings_and_not_checked() {
     );
     assert!(
         text.contains(
-            "   ● setuid.c:7   drop_to(const char *, uid_t, gid_t)\n     id-change-call · "
+            "   ● setuid.c:7        drop_to(const char *, uid_t, gid_t)\n     id-change-call · "
         ),
         "{text}"
     );

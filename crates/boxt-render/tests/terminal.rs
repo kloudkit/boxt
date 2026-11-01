@@ -212,7 +212,7 @@ fn sections_come_in_order() {
         "\n Findings   ● found   ○ suspected\n\n",
         "\n ▌setuid  1 found",
         " identity/setuid\n   fix  Start as the user.\n\n",
-        "   ● ev\\u{202e}il\\x09\\u{200b}.c:7   drop",
+        "   ● ev\\u{202e}il\\x09\\u{200b}.c:7\n     drop",
         "uid_t)\n     id-change-call · 9c1e00000000-1\n",
         "     guard  #ifdef _WIN32\n\n",
         "\nNot checked\n",
@@ -299,7 +299,7 @@ fn hostile_names_are_escaped() {
     let report = terminal(&sample(false), false);
     assert!(
         report.contains(
-            "   ● ev\\u{202e}il\\x09\\u{200b}.c:7   drop\\u{202e}\\u{200b}_to(const char *, uid_t)\n"
+            "   ● ev\\u{202e}il\\x09\\u{200b}.c:7\n     drop\\u{202e}\\u{200b}_to(const char *, uid_t)\n"
         ),
         "{report}"
     );
@@ -843,10 +843,10 @@ const SEED_GOLDEN: &str = r#"
    fix  Run as a non-root user; drop the switch to user or group 0 and the calls
         that need root.
 
-   ● needs-root.c:6   become_root(void)
+   ● needs-root.c:6    become_root(void)
      switch-to-root · 22f82d5b8473-1
 
-   ○ needs-root.c:8   become_root(void)
+   ○ needs-root.c:8    become_root(void)
      root-only-call · 22f82d5b8473-2
 
    ● needs-root.c:13   become_root_fully(void)
@@ -856,7 +856,7 @@ const SEED_GOLDEN: &str = r#"
    fix  Read the setting from a configuration file or the environment instead of
         the registry.
 
-   ● registry.c:8   read_setting(DWORD *)
+   ● registry.c:8    read_setting(DWORD *)
      registry-call · a932e98472ec-1
      guard  #ifdef _WIN32
 
@@ -871,7 +871,7 @@ const SEED_GOLDEN: &str = r#"
    ● needs-root.c:6   become_root(void)
      id-change-call · 600ca31d27d3-1
 
-   ● setuid.c:7   drop_to(const char *, uid_t, gid_t)
+   ● setuid.c:7       drop_to(const char *, uid_t, gid_t)
      id-change-call · bdb745a285af-1
 
 Not checked
@@ -930,13 +930,13 @@ fn two_rules_of_one_behaviour_print_each_fix_once() {
      ● needs-root.c:6   become_root(void)
        id-change-call · 600ca31d27d3-1
 
-     ● setuid.c:7   drop_to(const char *, uid_t, gid_t)
+     ● setuid.c:7       drop_to(const char *, uid_t, gid_t)
        id-change-call · bdb745a285af-1
 
    user/setuid-x
      fix  Ask the site team.
 
-     ○ setuid.c:9   drop_to(const char *, uid_t, gid_t)
+     ○ setuid.c:9       drop_to(const char *, uid_t, gid_t)
        id-change-call · bdb745a285af-2
 
 Not checked
@@ -1493,13 +1493,17 @@ fn table_rows_are_tinted_by_tier_without_banding() {
     {
         let line = lines[header + 1 + row];
         assert!(line.starts_with(&format!("  {target} ")), "{line:?}");
-        assert!(!line.contains("\x1b[2m"), "{line:?}");
+        assert!(
+            !line.replace("\x1b[2m–\x1b[0m", "").contains("\x1b[2m"),
+            "{line:?}"
+        );
         assert!(line.contains(&format!("{badge}\x1b[0m")), "{line:?}");
         assert!(
             line.contains(&format!("{tint}7\x1b[0m")) || row == 0,
             "{line:?}"
         );
-        assert!(line.contains(&format!("{tint}–\x1b[0m")), "{line:?}");
+        assert!(line.contains("\x1b[2m–\x1b[0m"), "{line:?}");
+        assert!(!line.contains(&format!("{tint}–")), "{line:?}");
     }
     assert!(lines[header + 1].contains("\x1b[33m10\x1b[0m"));
     let plain = terminal(&result, false);
@@ -1711,4 +1715,43 @@ fn colours_follow_the_operator_palette() {
             );
         }
     }
+}
+
+#[test]
+fn a_location_past_the_cap_puts_its_signature_on_the_next_line_at_the_group_column() {
+    let mut result = seed_shaped();
+    result.findings.insert(seeded(&Seeded {
+        path: "openbsd-compat/bsd-setres_id.c",
+        line: 38,
+        function: "setresgid",
+        signature: "(gid_t, gid_t, gid_t)",
+        rule: "identity/setuid",
+        confidence: Confidence::Found,
+        evidence: "id-change-call",
+        guarded: false,
+        id: "ecfae464b870-1",
+    }));
+    result.groups[3] = group(
+        "setuid",
+        3,
+        0,
+        &[(
+            "identity/setuid",
+            &["600ca31d27d3-1", "bdb745a285af-1", "ecfae464b870-1"],
+        )],
+    );
+    let report = terminal(&result, false);
+    let expected = "
+   ● needs-root.c:6   become_root(void)
+     id-change-call · 600ca31d27d3-1
+
+   ● setuid.c:7       drop_to(const char *, uid_t, gid_t)
+     id-change-call · bdb745a285af-1
+
+   ● openbsd-compat/bsd-setres_id.c:38
+                      setresgid(gid_t, gid_t, gid_t)
+     id-change-call · ecfae464b870-1
+";
+    assert!(report.contains(expected), "{report}");
+    assert!(widest(&report) <= 80, "{report}");
 }

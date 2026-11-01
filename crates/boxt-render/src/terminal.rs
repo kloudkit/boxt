@@ -82,6 +82,8 @@ const TABLE_MIN_WIDTH: usize = 72;
 const GUTTER: &str = "   ";
 const INDENT: &str = "  ";
 const MIN_SIGNATURE_COLUMN: usize = 16;
+const LOCATION_COLUMN_MAX: usize = 24;
+const DASH: &str = "–";
 
 pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     let p = Painter {
@@ -200,7 +202,7 @@ fn target_counts(target: &TargetVerdict) -> String {
 
 fn count_cell(n: u64) -> String {
     if n == 0 {
-        "–".to_owned()
+        DASH.to_owned()
     } else {
         n.to_string()
     }
@@ -264,7 +266,7 @@ fn targets(out: &mut String, p: &Painter, width: usize, result: &Result) {
             for (i, n) in numbers.iter().enumerate() {
                 out.push_str(GUTTER);
                 out.push_str(&" ".repeat(widths[i + 2] - n.width()));
-                out.push_str(&p.paint(tint, n));
+                out.push_str(&p.paint(if n == DASH { DIM } else { tint }, n));
             }
             out.push('\n');
         }
@@ -349,6 +351,15 @@ fn group_block(
     };
     emit(out, p, width, &heading, " ", "   ");
     let base = if inline { "   " } else { "     " };
+    let place_column = group
+        .rules
+        .iter()
+        .flat_map(|section| &section.findings)
+        .filter_map(|id| by_id.get(id))
+        .map(|reported| place_para(Para::new(), inputs, &reported.finding.location).columns())
+        .filter(|&columns| columns <= LOCATION_COLUMN_MAX)
+        .max()
+        .unwrap_or(0);
     for section in &group.rules {
         if !inline {
             emit(
@@ -368,7 +379,7 @@ fn group_block(
         out.push('\n');
         for id in &section.findings {
             if let Some(reported) = by_id.get(id) {
-                finding_lines(out, p, width, inputs, base, reported);
+                finding_lines(out, p, width, inputs, base, place_column, reported);
                 out.push('\n');
             }
         }
@@ -450,12 +461,15 @@ fn finding_lines(
     width: usize,
     inputs: &Inputs,
     base: &str,
+    place_column: usize,
     reported: &ReportedFinding,
 ) {
     let f = &reported.finding;
     let first = format!("{base}{} ", mark(f.confidence));
     let under = format!("{base}  ");
     let place = place_para(Para::new(), inputs, &f.location);
+    let over = place.columns() > place_column;
+    let pad = " ".repeat(place_column.saturating_sub(place.columns()));
     let mut placed = false;
     if let Scope::Function {
         qualified_name,
@@ -464,14 +478,25 @@ fn finding_lines(
     {
         let name = escape(qualified_name);
         let signature = escape(signature);
-        let head = first.width() + place.columns() + GUTTER.width() + name.width() + 1;
+        let column = if place_column == 0 {
+            under.width()
+        } else {
+            first.width() + place_column + GUTTER.width()
+        };
+        let head = column + name.width() + 1;
         if let Some(pieces) = parameters(&signature)
             && head + MIN_SIGNATURE_COLUMN <= width
         {
             let lines = signature_lines(&pieces, width - head);
-            out.push_str(&first);
-            out.push_str(&place.paint(p));
-            out.push_str(GUTTER);
+            if over {
+                emit(out, p, width, &place, &first, &under);
+                out.push_str(&" ".repeat(column));
+            } else {
+                out.push_str(&first);
+                out.push_str(&place.paint(p));
+                out.push_str(&pad);
+                out.push_str(GUTTER);
+            }
             out.push_str(&p.paint(BOLD, &name));
             out.push_str(&p.paint(DIM, "("));
             for (i, text) in lines.iter().enumerate() {
@@ -494,6 +519,7 @@ fn finding_lines(
             };
             let para = place
                 .clone()
+                .plain(&pad)
                 .plain(GUTTER)
                 .value(&name, BOLD)
                 .glue(&opening, DIM)
@@ -503,6 +529,11 @@ fn finding_lines(
         }
     }
     if !placed {
+        let place = if matches!(f.location.scope, Scope::File) {
+            place
+        } else {
+            place.plain(&pad)
+        };
         let para = match &f.location.scope {
             Scope::File | Scope::Function { .. } => place,
             Scope::Symbol(symbol) => place.plain("   symbol ").value(&escape(symbol), PLAIN),
