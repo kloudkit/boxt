@@ -15,16 +15,15 @@ use std::fmt;
 use boxt_core::message::CollectedFile;
 use boxt_core::outcome::{FileOutcome, OutOfScopeCause, sm3_share, verdict_counts};
 use boxt_core::settings::PathPattern;
-use boxt_core::verdict::{Excluded, Finding, Observation, Profile, ProjectFile, Result, TargetId};
+use boxt_core::verdict::{Excluded, Profile, ProjectFile, Result, TargetId};
 use boxt_core::version::Versions;
-use boxt_core::{SortedVec, Text, input_scope};
+use boxt_core::{RulesOutput, SortedVec, Text, input_scope};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy)]
 pub struct VerdictInput<'a> {
     pub files: &'a SortedVec<CollectedFile>,
-    pub findings: &'a SortedVec<Finding>,
-    pub observations: &'a SortedVec<Observation>,
+    pub rules: &'a RulesOutput,
     pub macro_tables_cut: &'a SortedVec<u32>,
     pub host_dependent_trees: &'a SortedVec<u32>,
     pub roots: &'a [Text],
@@ -116,8 +115,8 @@ pub fn build(
     let input_scope = scope::of(input.files);
     let host_dependent = !input.host_dependent_trees.is_empty()
         || input.files.iter().any(|f| f.outcome.host_dependent);
-    let findings = ids::assign(input.findings, input.roots);
-    let not_checked = not_checked::entries(input.files, input.observations);
+    let findings = ids::assign(&input.rules.findings, input.roots);
+    let not_checked = not_checked::entries(input.files, &input.rules.observations);
     Ok(Result {
         versions: Versions::CURRENT,
         project_file: input.project_file.clone(),
@@ -131,12 +130,12 @@ pub fn build(
         targets: prepared
             .profiles
             .iter()
-            .map(|p| targets::verdict(p, input.findings))
+            .map(|p| targets::verdict(p, &input.rules.findings))
             .collect(),
         groups: groups::by_behaviour(&findings),
         no_reader: not_checked::no_reader(&not_checked),
         findings,
         not_checked,
-        observations: input.observations.clone(),
+        observations: input.rules.observations.clone(),
     })
 }

@@ -1,35 +1,35 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use boxt_core::SortedVec;
 use boxt_core::Text;
 use boxt_core::fact::{Fact, FactKind, FieldValue, FileKind};
 use boxt_core::location::{Frame, FrameKind, Location, Scope, ScriptName, normalize_value_path};
 use boxt_core::verdict::{Confidence, Evidence, Finding, Observation};
-use serde::Serialize;
+use boxt_core::{RulesOutput, SortedVec};
 
 use crate::format::{CoScope, Literal, NumberOp};
 use crate::validate::{CommonField, Corpus, FieldPath, FieldTest, Matcher, Rule, RuleMatch, Test};
+use crate::windows::{Split, WindowsGuards};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Matched {
-    pub findings: SortedVec<Finding>,
-    pub observations: SortedVec<Observation>,
-}
-
-pub fn evaluate(corpus: &Corpus, facts: &[Fact]) -> Matched {
+pub fn evaluate(corpus: &Corpus, facts: &[Fact]) -> RulesOutput {
     let mut eval = Eval {
         facts,
         groups: Groups::new(facts),
         co_occurs: BTreeMap::new(),
     };
+    let windows = WindowsGuards::new(&corpus.manifest.windows_guard_macros);
     let mut findings = Vec::new();
+    let mut observations = Vec::new();
     for rule in &corpus.rules {
-        eval.rule(rule, &mut findings);
+        for (finding, at) in eval.rule(rule) {
+            match windows.split(finding, &facts[at]) {
+                Split::Finding(finding) => findings.push(finding),
+                Split::Branch(observation) => observations.push(observation),
+            }
+        }
     }
-    let mut observations: Vec<Observation> = facts
-        .iter()
-        .filter_map(|fact| match fact {
+    observations.extend(facts.iter().filter_map(|fact| {
+        match fact {
             Fact::Import {
                 file_kind: FileKind::Binary,
                 location,
@@ -47,11 +47,11 @@ pub fn evaluate(corpus: &Corpus, facts: &[Fact]) -> Matched {
                 })
             }
             _ => None,
-        })
-        .collect();
+        }
+    }));
     observations.sort();
     observations.dedup();
-    Matched {
+    RulesOutput {
         findings: SortedVec::from(findings),
         observations: SortedVec::from(observations),
     }
@@ -155,7 +155,8 @@ struct Eval<'a> {
 }
 
 impl Eval<'_> {
-    fn rule(&mut self, rule: &Rule, out: &mut Vec<Finding>) {
+    fn rule(&mut self, rule: &Rule) -> Vec<(Finding, usize)> {
+        let mut out = Vec::new();
         let mut found_keys = BTreeSet::new();
         let mut found_anchors = BTreeSet::new();
         let mut found_covered = BTreeSet::new();
@@ -184,10 +185,11 @@ impl Eval<'_> {
                             continue;
                         }
                     }
-                    out.push(finding(rule, m, &self.facts[at]));
+                    out.push((finding(rule, m, &self.facts[at]), at));
                 }
             }
         }
+        out
     }
 
     fn hits(&mut self, matcher: &Matcher) -> Vec<(HitKey, usize)> {

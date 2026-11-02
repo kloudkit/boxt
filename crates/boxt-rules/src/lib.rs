@@ -8,6 +8,7 @@ mod load;
 mod pack;
 mod schema;
 mod validate;
+mod windows;
 
 use std::fmt;
 use std::sync::OnceLock;
@@ -15,7 +16,7 @@ use std::sync::OnceLock;
 use sha2::{Digest, Sha256};
 
 pub use error::{CorpusError, LoadError, Problem};
-pub use eval::{Matched, evaluate};
+pub use eval::evaluate;
 pub use format::{CoScope, Literal, NumberOp};
 pub use load::{MAX_DEPTH, MAX_FILE_BYTES, MAX_FOLDER_DEPTH, load_dir, load_tar, load_user_dir};
 pub use pack::pack;

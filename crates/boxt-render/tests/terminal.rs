@@ -13,8 +13,8 @@ use boxt_render::boxt_core::outcome::{
 use boxt_render::boxt_core::settings::PathPattern;
 use boxt_render::boxt_core::verdict::{
     BehaviourId, Confidence, Evidence, EvidenceId, Excluded, Finding, Group, GroupKey, LineRange,
-    NotCheckedEntry, ProjectFile, ReportedFinding, Result, RuleId, RuleSection, TargetId,
-    TargetVerdict, Tier, TierRange,
+    NotCheckedEntry, Observation, ProjectFile, ReportedFinding, Result, RuleId, RuleSection,
+    TargetId, TargetVerdict, Tier, TierRange,
 };
 use boxt_render::boxt_core::version::Versions;
 use boxt_render::boxt_core::{SortedVec, Text};
@@ -86,7 +86,9 @@ fn sample(host_dependent: bool) -> Result {
                 text: Text::from("#ifdef _WIN32"),
                 identifiers: [Text::from("_WIN32")].into_iter().collect(),
                 holds_code: true,
+                has_token: true,
             }],
+            later: Vec::new(),
             has_alternative: false,
             region: RegionId(0),
         }],
@@ -765,7 +767,9 @@ fn seeded(s: &Seeded) -> ReportedFinding {
                 text: Text::from("#ifdef _WIN32"),
                 identifiers: [Text::from("_WIN32")].into_iter().collect(),
                 holds_code: true,
+                has_token: true,
             }],
+            later: Vec::new(),
             has_alternative: false,
             region: RegionId(0),
         }]
@@ -1916,4 +1920,112 @@ fn a_location_past_the_cap_puts_its_signature_on_the_next_line_at_the_group_colu
 ";
     assert!(report.contains(expected), "{report}");
     assert!(widest(&report) <= 80, "{report}");
+}
+
+fn windows_branch(location: Location, condition: &str, api: Option<&str>) -> Observation {
+    Observation::WindowsBranch {
+        location,
+        guards: Vec::new(),
+        condition: Text::from(condition),
+        behaviour: BehaviourId::new("registry").unwrap(),
+        api: api.map(Text::from),
+    }
+}
+
+#[test]
+fn windows_branches_are_listed_after_the_findings_aligned_and_escaped() {
+    let mut result = sample(false);
+    result.observations = vec![
+        windows_branch(
+            loc("reg.c", Some(7), Scope::File),
+            "#ifdef _WIN32",
+            Some("RegOpenKeyExA"),
+        ),
+        windows_branch(
+            loc("os/win\u{202e}.c", Some(12), Scope::File),
+            "#ifndef _WIN32\u{200b}, #else",
+            Some("RegCloseKey\u{202e}"),
+        ),
+        windows_branch(loc("other.c", Some(3), Scope::File), "#if _WIN32", None),
+        Observation::DynamicLoad {
+            location: loc("app", None, Scope::File),
+            symbol: Text::from("dlopen"),
+        },
+    ]
+    .into();
+    let report = terminal(&result, false);
+    let lines = lines_of(&report);
+    let heading = lines
+        .iter()
+        .position(|l| *l == "Windows branches (3)")
+        .unwrap_or_else(|| panic!("{report}"));
+    assert_eq!(
+        &lines[heading + 1..heading + 4],
+        [
+            "  os/win\\u{202e}.c:12   #ifndef _WIN32\\u{200b}, #else   RegCloseKey\\u{202e}",
+            "  other.c:3             #if _WIN32",
+            "  reg.c:7               #ifdef _WIN32   RegOpenKeyExA",
+        ],
+        "{report}"
+    );
+    assert!(position(&report, "Windows branches (3)") > position(&report, " Findings"));
+    assert!(position(&report, "Windows branches (3)") < position(&report, "Not checked"));
+    assert!(!terminal(&sample(false), false).contains("Windows branches"));
+}
+
+#[test]
+fn a_location_past_the_cap_puts_its_windows_branch_on_the_next_line_at_the_column() {
+    let mut result = sample(false);
+    let long = "src/platform/windows/registry_settings.c";
+    result.observations = vec![
+        windows_branch(
+            loc("reg.c", Some(7), Scope::File),
+            "#ifdef _WIN32",
+            Some("RegOpenKeyExA"),
+        ),
+        windows_branch(
+            loc(long, Some(120), Scope::File),
+            "#if defined(_WIN32) || defined(_WIN64)",
+            Some("RegQueryValueExA"),
+        ),
+    ]
+    .into();
+    let report = at_width(&result, 60, false);
+    let lines = lines_of(&report);
+    let heading = lines
+        .iter()
+        .position(|l| *l == "Windows branches (2)")
+        .unwrap_or_else(|| panic!("{report}"));
+    assert_eq!(
+        &lines[heading + 1..heading + 5],
+        [
+            "  reg.c:7   #ifdef _WIN32   RegOpenKeyExA".to_owned(),
+            format!("  {long}:120"),
+            "            #if defined(_WIN32) || defined(_WIN64)".to_owned(),
+            "            RegQueryValueExA".to_owned(),
+        ],
+        "{report}"
+    );
+    assert!(widest(&report) <= 60, "{report}");
+}
+
+#[test]
+fn a_windows_branch_in_a_second_input_is_prefixed_with_its_input() {
+    let mut result = sample(false);
+    let mut other = loc("reg.c", Some(7), Scope::File);
+    other.input = InputRef {
+        index: 1,
+        given: Text::from("other\u{202e}"),
+    };
+    result.observations = vec![windows_branch(
+        other,
+        "#ifdef _WIN32",
+        Some("RegOpenKeyExA"),
+    )]
+    .into();
+    let report = terminal(&result, false);
+    assert!(
+        lines_of(&report).contains(&"  other\\u{202e}: reg.c:7   #ifdef _WIN32   RegOpenKeyExA"),
+        "{report}"
+    );
 }

@@ -15,7 +15,7 @@ use boxt_verdict::boxt_core::verdict::{
     GroupKey, LineRange, NotCheckedEntry, Observation, Profile, ProjectFile, Result, RuleId,
     TargetId, Tier, TierRange,
 };
-use boxt_verdict::boxt_core::{SortedVec, Text};
+use boxt_verdict::boxt_core::{RulesOutput, SortedVec, Text};
 use boxt_verdict::{VerdictError, VerdictInput, build, prepare};
 
 fn id(s: &str) -> TargetId {
@@ -173,13 +173,16 @@ impl Run {
 
     fn build(&self) -> std::result::Result<Result, VerdictError> {
         let none = SortedVec::new();
+        let rules = RulesOutput {
+            findings: self.findings.clone(),
+            observations: self.observations.clone(),
+        };
         let prepared = prepare(&self.profiles, &self.targets)?;
         build(
             &prepared,
             &VerdictInput {
                 files: &self.files,
-                findings: &self.findings,
-                observations: &self.observations,
+                rules: &rules,
                 macro_tables_cut: &none,
                 host_dependent_trees: &self.host_dependent_trees,
                 roots: &self.roots,
@@ -544,10 +547,19 @@ fn not_checked_lists_files_regions_and_dynamic_loads_with_reasons() {
         None,
         Scope::Symbol(Text::from("dlopen")),
     );
-    run.observations = vec![Observation::DynamicLoad {
-        location: dl_location.clone(),
-        symbol: Text::from("dlopen"),
-    }]
+    run.observations = vec![
+        Observation::DynamicLoad {
+            location: dl_location.clone(),
+            symbol: Text::from("dlopen"),
+        },
+        Observation::WindowsBranch {
+            location: partly.location.clone(),
+            guards: Vec::new(),
+            condition: Text::from("#ifdef _WIN32"),
+            behaviour: behaviour("registry"),
+            api: Some(Text::from("RegOpenKeyExA")),
+        },
+    ]
     .into();
     let result = run.build().unwrap();
     let expected = [
@@ -584,7 +596,14 @@ fn not_checked_lists_files_regions_and_dynamic_loads_with_reasons() {
     ];
     assert_eq!(result.not_checked.as_slice(), &expected);
     assert_eq!(result.counts.not_checked, Count::Exact(2));
-    assert_eq!(result.observations.len(), 1);
+    assert_eq!(result.observations.len(), 2);
+    assert!(result.findings.is_empty());
+    assert!(
+        result
+            .targets
+            .iter()
+            .all(|t| t.found == 0 && t.suspected == 0)
+    );
 }
 
 #[test]

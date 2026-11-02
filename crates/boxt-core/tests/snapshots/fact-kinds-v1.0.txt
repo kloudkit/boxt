@@ -74,8 +74,8 @@ types
   FileKind = source | binary | package | service | config
   Frame = {kind: FrameKind, name: string}
   FrameKind = rpm | deb | archive
-  GuardChain = {frames: [GuardFrame], has_alternative: bool, region: u32}
-  GuardFrame = {directive: Directive, text: string, identifiers: [string], holds_code: bool}
+  GuardChain = {frames: [GuardFrame], later: [GuardFrame] | [], has_alternative: bool, region: u32}
+  GuardFrame = {directive: Directive, text: string, identifiers: [string], holds_code: bool, has_token: bool}
   InputRef = {index: u32, given: string}
   Location = {input: InputRef, frames: [Frame], path: string | null, line: u32 | null, scope: Scope}
   PathText = string

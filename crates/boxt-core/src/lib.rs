@@ -44,3 +44,4 @@ pub mod version;
 
 pub use sorted::SortedVec;
 pub use text::Text;
+pub use verdict::RulesOutput;

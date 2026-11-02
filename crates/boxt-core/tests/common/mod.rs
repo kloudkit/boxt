@@ -89,6 +89,7 @@ pub fn frame(directive: Directive, holds_code: bool) -> GuardFrame {
         text: Text::from("#ifdef _WIN32"),
         identifiers: vec![Text::from("_WIN32")].into(),
         holds_code,
+        has_token: false,
     }
 }
 
@@ -102,9 +103,19 @@ pub fn guards() -> Vec<GuardChain> {
             frames.extend(rest.iter().map(|&d| frame(d, false)));
         }
         frames.last_mut().unwrap().holds_code = true;
+        frames[0].has_token = i == 0;
+        let later = if i == 1 {
+            vec![GuardFrame {
+                has_token: true,
+                ..frame(Directive::Else, false)
+            }]
+        } else {
+            Vec::new()
+        };
         out.push(GuardChain {
             frames,
-            has_alternative: i == 0,
+            later,
+            has_alternative: i <= 1,
             region: RegionId(i as u32),
         });
     }

@@ -301,11 +301,20 @@ pub enum Observation {
     WindowsBranch {
         location: Location,
         guards: Vec<GuardChain>,
+        condition: Text,
+        behaviour: BehaviourId,
+        api: Option<Text>,
     },
     DynamicLoad {
         location: Location,
         symbol: Text,
     },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RulesOutput {
+    pub findings: SortedVec<Finding>,
+    pub observations: SortedVec<Observation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -560,6 +569,43 @@ mod tests {
         let back: Excluded = serde_json::from_value(json).unwrap();
         assert_eq!(back, excluded);
         assert_eq!(Excluded::default().patterns.len(), 0);
+    }
+
+    #[test]
+    fn rules_output_carries_windows_branches_beside_findings() {
+        use crate::location::{InputRef, RelPath};
+        let location = Location::file(
+            InputRef {
+                index: 0,
+                given: Text::from("/src"),
+            },
+            Vec::new(),
+            RelPath::try_from("reg.c").unwrap(),
+        );
+        let branch = |api: Option<&str>| Observation::WindowsBranch {
+            location: location.clone(),
+            guards: Vec::new(),
+            condition: Text::from("#ifdef _WIN32"),
+            behaviour: BehaviourId::new("registry").unwrap(),
+            api: api.map(Text::from),
+        };
+        let output = RulesOutput {
+            findings: SortedVec::new(),
+            observations: vec![branch(Some("RegOpenKeyExA")), branch(None)].into(),
+        };
+        assert_eq!(output.observations[0], branch(None));
+        let json = serde_json::to_value(&output).unwrap();
+        let fields = &json["observations"][1]["windows_branch"];
+        assert_eq!(fields["condition"], "#ifdef _WIN32");
+        assert_eq!(fields["behaviour"], "registry");
+        assert_eq!(fields["api"], "RegOpenKeyExA");
+        assert_eq!(
+            json["observations"][0]["windows_branch"]["api"],
+            serde_json::Value::Null
+        );
+        let back: RulesOutput = serde_json::from_value(json).unwrap();
+        assert_eq!(back, output);
+        assert!(RulesOutput::default().findings.is_empty());
     }
 
     #[test]

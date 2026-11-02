@@ -17,6 +17,7 @@ pub enum Kind {
     Else,
     Endif,
     Error,
+    Warning,
     Include,
     Define,
     Other,
@@ -34,6 +35,7 @@ impl Kind {
             b"else" => Kind::Else,
             b"endif" => Kind::Endif,
             b"error" => Kind::Error,
+            b"warning" => Kind::Warning,
             b"include" | b"include_next" => Kind::Include,
             b"define" => Kind::Define,
             _ => Kind::Other,
@@ -262,30 +264,37 @@ impl Lex {
         u32::try_from(k).unwrap_or(u32::MAX)
     }
 
-    fn frame(&self, dir: usize, holds_code: bool) -> GuardFrame {
-        let d = &self.dirs[dir];
+    fn frame(&self, branch: &Branch, holds_code: bool) -> GuardFrame {
+        let d = &self.dirs[branch.dir];
         GuardFrame {
             directive: d.kind.directive().unwrap_or(Directive::Else),
             text: Text::from(d.text.as_str()),
             identifiers: identifiers(&d.text),
             holds_code,
+            has_token: branch.has_token,
         }
     }
 
     pub fn chain(&self, g: usize, j: usize) -> GuardChain {
         let group = &self.groups[g];
-        let frames = group.branches[..=j]
-            .iter()
-            .enumerate()
-            .map(|(i, b)| self.frame(b.dir, i == j))
-            .collect();
-        let has_alternative = group
-            .branches
-            .iter()
-            .enumerate()
-            .any(|(i, b)| i != j && b.has_token);
+        let is_else = |b: &Branch| self.dirs[b.dir].kind.directive() == Some(Directive::Else);
+        let earlier: Vec<&Branch> = group.branches[..j].iter().filter(|b| !is_else(b)).collect();
+        let mut frames: Vec<GuardFrame> = earlier.iter().map(|b| self.frame(b, false)).collect();
+        frames.push(self.frame(&group.branches[j], true));
+        let mut later = Vec::new();
+        if !is_else(&group.branches[j]) {
+            for b in &group.branches[j + 1..] {
+                later.push(self.frame(b, false));
+                if is_else(b) {
+                    break;
+                }
+            }
+        }
+        let has_alternative =
+            earlier.iter().any(|b| b.has_token) || later.iter().any(|f: &GuardFrame| f.has_token);
         GuardChain {
             frames,
+            later,
             has_alternative,
             region: group.branches[j].region,
         }
@@ -534,7 +543,7 @@ pub fn lex(src: &[u8], cpp: bool) -> Lex {
             let first = dirs.partition_point(|d| d.start < bs);
             for d in dirs[first..].iter().take_while(|d| d.start < be) {
                 if mask[pos.min(d.start)..d.start].iter().any(|&c| !is_ws(c))
-                    || d.kind != Kind::Error
+                    || !matches!(d.kind, Kind::Error | Kind::Warning)
                 {
                     tok = true;
                     break;
@@ -554,30 +563,31 @@ pub fn lex(src: &[u8], cpp: bool) -> Lex {
 mod tests {
     use super::*;
 
-    fn f(d: Directive, t: &str, h: bool) -> (Directive, String, bool) {
-        (d, t.to_string(), h)
+    fn f(d: Directive, t: &str, h: bool, tok: bool) -> (Directive, String, bool, bool) {
+        (d, t.to_string(), h, tok)
     }
 
-    type Shape = (bool, Vec<(Directive, String, bool)>);
+    type Frames = Vec<(Directive, String, bool, bool)>;
+    type Shape = (bool, Frames, Frames);
+
+    fn frames(frames: &[GuardFrame]) -> Frames {
+        frames
+            .iter()
+            .map(|fr| {
+                (
+                    fr.directive,
+                    fr.text.as_str().unwrap().to_string(),
+                    fr.holds_code,
+                    fr.has_token,
+                )
+            })
+            .collect()
+    }
 
     fn shape(chains: &[GuardChain]) -> Vec<Shape> {
         chains
             .iter()
-            .map(|c| {
-                (
-                    c.has_alternative,
-                    c.frames
-                        .iter()
-                        .map(|fr| {
-                            (
-                                fr.directive,
-                                fr.text.as_str().unwrap().to_string(),
-                                fr.holds_code,
-                            )
-                        })
-                        .collect(),
-                )
-            })
+            .map(|c| (c.has_alternative, frames(&c.frames), frames(&c.later)))
             .collect()
     }
 
@@ -592,37 +602,52 @@ mod tests {
                 (
                     true,
                     vec![
-                        f(Directive::If, "#if A", false),
-                        f(Directive::Else, "#else", true)
-                    ]
+                        f(Directive::If, "#if A", false, true),
+                        f(Directive::Else, "#else", true, true)
+                    ],
+                    vec![]
                 ),
-                (false, vec![f(Directive::Ifdef, "#ifdef B", true)]),
+                (
+                    false,
+                    vec![f(Directive::Ifdef, "#ifdef B", true, true)],
+                    vec![]
+                ),
             ]
         );
         assert_eq!(
             shape(&at("x()")),
-            vec![(true, vec![f(Directive::If, "#if A", true)])]
+            vec![(
+                true,
+                vec![f(Directive::If, "#if A", true, true)],
+                vec![f(Directive::Else, "#else", false, true)]
+            )]
         );
         assert_eq!(
             shape(&at("k()")),
             vec![(
                 true,
                 vec![
-                    f(Directive::Ifdef, "#ifdef X", false),
-                    f(Directive::Elif, "#elif Y", true)
-                ]
+                    f(Directive::Ifdef, "#ifdef X", false, true),
+                    f(Directive::Elif, "#elif Y", true, true)
+                ],
+                vec![]
             )]
         );
         assert_eq!(
             shape(&at("f()")),
-            vec![(false, vec![f(Directive::Ifdef, "#ifdef _WIN32", true)])]
+            vec![(
+                false,
+                vec![f(Directive::Ifdef, "#ifdef _WIN32", true, true)],
+                vec![f(Directive::Else, "#else", false, false)]
+            )]
         );
         let z = at("z()");
         assert_eq!(
             shape(&z),
             vec![(
                 false,
-                vec![f(Directive::If, "#if defined(X) && FOO(1)", true)]
+                vec![f(Directive::If, "#if defined(X) && FOO(1)", true, true)],
+                vec![]
             )]
         );
         assert_eq!(
@@ -630,8 +655,10 @@ mod tests {
             &[Text::from("FOO"), Text::from("X")]
         );
         assert!(at("void").is_empty());
-        for chain in at("m()") {
-            chain.validate().unwrap();
+        for needle in ["m()", "x()", "k()", "f()", "z()"] {
+            for chain in at(needle) {
+                chain.validate().unwrap();
+            }
         }
     }
 
@@ -700,5 +727,42 @@ mod tests {
         let at = src.windows(3).position(|w| w == b"f()").unwrap();
         let chain = &lx.stack_at(at)[0];
         assert!(!chain.has_alternative);
+        assert_eq!(
+            frames(&chain.later),
+            vec![f(Directive::Else, "#else", false, false)]
+        );
+    }
+
+    #[test]
+    fn later_branches_say_whether_each_holds_a_token() {
+        let src = b"#ifdef _WIN32\nf();\n#elif defined(_WIN64)\n/* none */\n#elif defined(__linux__)\ng();\n#else\n#error x\n#endif\n";
+        let lx = lex(src, false);
+        let at = src.windows(3).position(|w| w == b"f()").unwrap();
+        let chain = &lx.stack_at(at)[0];
+        assert!(chain.has_alternative);
+        assert_eq!(
+            frames(&chain.later),
+            vec![
+                f(Directive::Elif, "#elif defined(_WIN64)", false, false),
+                f(Directive::Elif, "#elif defined(__linux__)", false, true),
+                f(Directive::Else, "#else", false, false),
+            ]
+        );
+        chain.validate().unwrap();
+        let at = src.windows(3).position(|w| w == b"g()").unwrap();
+        let chain = &lx.stack_at(at)[0];
+        assert_eq!(
+            frames(&chain.frames),
+            vec![
+                f(Directive::Ifdef, "#ifdef _WIN32", false, true),
+                f(Directive::Elif, "#elif defined(_WIN64)", false, false),
+                f(Directive::Elif, "#elif defined(__linux__)", true, true),
+            ]
+        );
+        assert_eq!(
+            frames(&chain.later),
+            vec![f(Directive::Else, "#else", false, false)]
+        );
+        chain.validate().unwrap();
     }
 }

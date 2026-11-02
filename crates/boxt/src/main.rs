@@ -318,8 +318,7 @@ fn report(cli: &Cli) -> Result<(), String> {
         &prepared,
         &VerdictInput {
             files: &collected.files,
-            findings: &matched.findings,
-            observations: &matched.observations,
+            rules: &matched,
             macro_tables_cut: &collected.macro_tables_cut,
             host_dependent_trees: &collected.host_dependent_trees,
             roots: &roots,

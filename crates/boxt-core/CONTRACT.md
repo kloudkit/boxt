@@ -25,6 +25,8 @@ alone.
 | `Location.frames`, `WorkerMsg::Opened.frames` | outermost container first |
 | `Fact::*.guards`, `Finding.guards`, `Observation::WindowsBranch.guards` | one `GuardChain` per enclosing conditional chain, outermost first |
 | `GuardChain.frames` | as written: the chain's opening directive first, the branch holding the code last |
+| `GuardChain.later` | as written: the directive after the branch holding the code first, the chain's last `#elif` or `#else` last |
+| `RulesOutput.findings`, `.observations` | sorted, by the derived `Ord` of `Finding` and `Observation` |
 | `Fact::Call.args`, `ShellCommand.assignments`, `.argv`, `.redirections` | as written |
 | `GuardFrame.identifiers` | sorted, `Text` byte order |
 | `WorkerMsg::Facts.facts`, `.Regions.regions`, `.Notes.notes`, `CompileUnits.entries`, `Definitions.definitions` | as the reader produced them |
@@ -258,8 +260,19 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   `GuardChain::validate` checks that shape.
 - So `#ifdef B` nested in the `#else` of `#if A` is two chains: `[#if A, #else*]` then
   `[#ifdef B*]`, where `*` marks `holds_code`.
-- `has_alternative` belongs to the chain: true when another branch of that chain holds a
-  token other than whitespace, a comment or `#error`.
+- `has_alternative` belongs to the chain: true when another frame of that chain, in
+  `frames` or `later`, has `has_token`.
+- `later` (Story 2.3, S2-A1) holds the frames of the chain's branches after the one holding
+  the code, in the same form as `frames`, each with `holds_code` false. It ends at the
+  chain's first `#else`, and is empty when the code's branch is an `#else`. In a malformed
+  chain with more than one `#else`, an `#else` before the code's branch is left out of
+  `frames`, so every chain the reader gives validates.
+- Every frame, in `frames` and `later`, carries `has_token` (Story 2.3): true when its
+  branch holds a token other than whitespace, a comment, `#error` or `#warning`.
+  `GuardChain::validate` also refuses `holds_code` on a later frame (`HoldsCodeNotLast`),
+  an opening directive in `later` (`OpenerInsideChain`), a later frame after an `#else`
+  (`LaterAfterElse`), and a `has_alternative` that differs from whether any frame but the
+  code's has `has_token` (`AlternativeMismatch`).
 - A frame's `text` runs from the `#` through the condition (`#if`, `#elif`), the name
   (`#ifdef` family) or the keyword (`#else`), with line splices removed, each comment
   replaced by a space, and each run of whitespace collapsed to one space. Its
@@ -272,7 +285,8 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   directive, then the branch's own chain; `end_line` is the line of the next `#elif`,
   `#else` or `#endif` of the chain, or the file's last line when the chain is never
   closed.
-- Readers never classify a guard (AD-18).
+- Readers never classify a guard (AD-18). Only `boxt-rules` decides which side of a chain
+  is Windows (§ Rule matching).
 
 ### The rule-schema snapshot (AD-2)
 
@@ -294,8 +308,10 @@ at least one frame. Line `none` is `LineRule::Absent`; any other line entry is
   snapshot records the `{bytes_base64}` form.
 - To change facts: bump the version, then run the tests with `BOXT_WRITE_SNAPSHOT=1`, which
   writes the new version's file and never overwrites an existing one. Recorded snapshots
-  are never edited. Version 1.0 was re-recorded twice before anything shipped: once in
-  Story 1.1, and once in Story 1.7, when each field gained its `FieldType`.
+  are never edited. Version 1.0 was re-recorded three times before anything shipped: once in
+  Story 1.1, once in Story 1.7, when each field gained its `FieldType`, and once in Story
+  2.3, when `GuardChain` gained `later` and `GuardFrame` gained `has_token`, by operator
+  decision, since nothing has shipped.
 - Each `FACT_KINDS` field is a `Field{name, ty}`. `FieldType` is what a rule test can do with
   the field: `text`, `path` (a `PathText`), `integer`, `bool`, `text_list` (the only type a
   rule may index, `args.0`), `guards` (only `guard contains`) and `records` (lists of
@@ -335,7 +351,9 @@ root's own. `path::matches(pattern, text)` is `is_match`, then `is_match_folded`
 
 ## Rule matching (AD-9, FR-15, FR-44, Story 1.8)
 
-`boxt_rules::evaluate(corpus, facts) -> Matched{findings, observations}` is the one matcher.
+`boxt_rules::evaluate(corpus, facts) -> RulesOutput{findings, observations}` is the one
+matcher. `RulesOutput` is the core carrier of the rules' output (S-A2, Story 2.3); the
+ignored-macro region counts join it with the next story.
 
 - **Order (S2-A4).** `facts` arrive in canonical order: the caller flattens
   `Collected.facts` in order, which is already `CanonicalKey` order (the bin does this
@@ -379,6 +397,38 @@ root's own. `path::matches(pattern, text)` is `is_match`, then `is_match_folded`
   is dropped when that fact is a found anchor or a member of a found group, and a
   suspected hit on a group is dropped when it is a found group or any found anchor (the
   fact a found finding sits at) is a member of it.
+- **Windows branches (FR-8, AD-18, Story 2.3).** Every finding the rules give, whatever
+  its rule, is classified against the manifest's `windows_guard_macros`, so adding a macro
+  to a corpus changes results with no code change. A frame's side comes from its directive
+  and its `text`, read as tokens with whitespace ignored:
+  - Windows-positive: `#ifdef W` or `#elifdef W`; an `#if` or `#elif` whose condition is
+    a Windows disjunction. A Windows disjunction is one or more terms joined by `||`
+    outside parentheses; a term is `W`, `defined(W)` or `defined W` for a Windows macro
+    `W`, or a Windows disjunction in one pair of parentheses. So
+    `defined(_WIN32) || (_WIN64 || (defined _MSC_VER))` is positive.
+  - Windows-negative: `#ifndef W` or `#elifndef W`; an `#if` or `#elif` whose condition is
+    one or more negated terms joined by `&&` outside parentheses, each `!` before a term as
+    above: `!defined(W)`, `!W`, `!(defined(W) || defined(V))`,
+    `!defined(W) && !defined(V)`.
+  - Anything else, any other `&&`, `||` of negations or comparison included, is neither
+    side. Each pair of parentheses a term opens counts one level; a condition nested more
+    than 64 levels deep is neither side.
+
+  A branch of a chain, in `frames` or `later`, is Windows-side when its own frame is
+  Windows-positive, or when any frame before it in the chain is Windows-negative, since it
+  is then reached only with the macro defined. A non-Windows alternative is any frame other
+  than the code's, in `frames` or `later`, that has `has_token` and is not Windows-side.
+  The outermost chain of a finding's guards whose code branch is Windows-side decides (D4):
+  the finding is replaced by `Observation::WindowsBranch{location, guards, condition,
+  behaviour, api}` when that chain has a non-Windows alternative, and stays a finding when
+  it has none, whatever the chains inside it hold, so an `#else` inside a Windows-only block
+  is never an alternative. A finding with no Windows-side chain stays a finding. That chain
+  supplies `condition`, which is the code frame's `text` when that frame is
+  Windows-positive; otherwise the `text` of the first Windows-negative frame before it, `, `
+  and the code frame's `text`. `api` is the callee when the finding's fact is a `call`, else
+  `None`. The replaced finding is in no list and counts on no verdict line. A rule's found
+  hit still suppresses its suspected ones when it became an observation. Folder-level
+  Windows code (`os/win32/`) is not classified.
 - **Dynamic loading (RA2-M5).** Each binary `Import` whose `symbol` is in the manifest's
   `dynamic_load_symbols` gives one `Observation::DynamicLoad{location, symbol}`, equal
   observations (the same symbol imported twice at one location) kept once; a source call
@@ -1090,9 +1140,12 @@ are:
   decision 1.0 is re-recorded once more rather than bumped. Story 2.1 added
   `Result.project_file`; by the same operator decision 1.0 is re-recorded, since nothing
   has shipped. Story 2.2 added `Result.excluded`; by the same operator decision 1.0 is
-  re-recorded once more. `RULE_SCHEMA_VERSION` stays
-  1.0, since no `Fact` changed, and its snapshot is unchanged. The worker messages and `Job`
-  carry no version: both ends are the same binary.
+  re-recorded once more. Story 2.3 added `condition`, `behaviour` and `api` to
+  `Observation::WindowsBranch`, `later` to every `GuardChain` and `has_token` to every
+  `GuardFrame` in `Result`; by the same operator decision 1.0 is re-recorded again.
+  `RULE_SCHEMA_VERSION` stays 1.0 too: Story 2.3's `GuardChain.later` and
+  `GuardFrame.has_token` re-recorded its snapshot at 1.0 (§ The rule-schema snapshot).
+  The worker messages and `Job` carry no version: both ends are the same binary.
 
 ## Verdict types (AD-5, AD-16, AD-19, RA2-M6)
 
@@ -1119,7 +1172,7 @@ are:
 named `targets` against the loaded `profiles` once, before any job is dispatched.
 `boxt_verdict::build(&Prepared, &VerdictInput) -> Result<Result, VerdictError>` is the one
 place a `Result` is built, and does not resolve targets again. `VerdictInput` holds core
-types only: the run's `files`, the rules' `findings` and `observations`,
+types only: the run's `files`, `rules` (the `RulesOutput` from `boxt-rules`),
 `macro_tables_cut`, `host_dependent_trees`, `roots` (the absolute form of each input,
 indexed by `InputRef.index`, supplied by the caller: verdict reads no filesystem),
 `compile_database_used`, `project_file` (copied into `Result.project_file`) and
@@ -1166,7 +1219,8 @@ exists without it and "ready" can never be shown without the list.
   location: `ranges` holds every region of that reason as a `LineRange{first, last}`, in
   line order (Story 1.12; it replaced one `Region` entry per region).
 - `DynamicLoad{location, symbol}` for each `Observation::DynamicLoad`, which also stays in
-  `Result.observations`.
+  `Result.observations`. An `Observation::WindowsBranch` is not a not-checked entry: it
+  stays in `Result.observations` only, and the terminal lists it under its own heading.
 - Unmapped behaviours are per target, in `TargetVerdict.unmapped`. Per-control entries
   (controls no rule can detect, or whose rules read no input kind that was read) need
   `Coverage` and are Story 4.2's.

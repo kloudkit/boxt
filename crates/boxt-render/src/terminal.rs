@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use anstyle::{AnsiColor, Color, Style};
+use boxt_core::Text;
 use boxt_core::fact::GuardChain;
 use boxt_core::identity::FindingId;
 use boxt_core::labels;
@@ -10,7 +11,7 @@ use boxt_core::outcome::OutOfScopeCause;
 use boxt_core::outcome::{Count, Details, FileOutcome, NotCheckedReason, Outcome, Sm3};
 use boxt_core::settings::Encoding;
 use boxt_core::verdict::{
-    Confidence, Excluded, Group, GroupKey, LineRange, NotCheckedEntry, ProjectFile,
+    Confidence, Excluded, Group, GroupKey, LineRange, NotCheckedEntry, Observation, ProjectFile,
     ReportedFinding, Result, TargetVerdict, Tier, TierRange,
 };
 use unicode_width::UnicodeWidthStr;
@@ -34,6 +35,10 @@ impl Inputs {
                 NotCheckedEntry::File { location, .. }
                 | NotCheckedEntry::Regions { location, .. }
                 | NotCheckedEntry::DynamicLoad { location, .. } => location,
+            }))
+            .chain(result.observations.iter().filter_map(|o| match o {
+                Observation::WindowsBranch { location, .. } => Some(location),
+                Observation::DynamicLoad { .. } => None,
             }))
             .chain(
                 result
@@ -132,6 +137,7 @@ pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     for group in &result.groups {
         group_block(&mut out, &p, width, &inputs, &by_id, group);
     }
+    windows_branches(&mut out, &p, width, &inputs, result);
     not_checked(&mut out, &p, width, &inputs, result, options.all);
     out
 }
@@ -450,6 +456,60 @@ fn group_block(
             }
         }
     }
+}
+
+fn windows_branches(out: &mut String, p: &Painter, width: usize, inputs: &Inputs, result: &Result) {
+    let branches: Vec<(&Location, &Text, Option<&Text>)> = result
+        .observations
+        .iter()
+        .filter_map(|o| match o {
+            Observation::WindowsBranch {
+                location,
+                condition,
+                api,
+                ..
+            } => Some((location, condition, api.as_ref())),
+            Observation::DynamicLoad { .. } => None,
+        })
+        .collect();
+    if branches.is_empty() {
+        return;
+    }
+    let heading = Para::new()
+        .text("Windows branches", BOLD)
+        .plain(&format!(" ({})", branches.len()));
+    emit(out, p, width, &heading, "", "");
+    let place_column = branches
+        .iter()
+        .map(|(loc, ..)| place_para(Para::new(), inputs, loc).columns())
+        .filter(|&columns| columns <= LOCATION_COLUMN_MAX)
+        .max()
+        .unwrap_or(0);
+    let column = if place_column == 0 {
+        INDENT.width() + 2
+    } else {
+        INDENT.width() + place_column + GUTTER.width()
+    };
+    for (loc, condition, api) in branches {
+        let place = place_para(Para::new(), inputs, loc);
+        let rest = |para: Para| {
+            let para = para.value(&escape(condition), MAGENTA);
+            match api {
+                Some(api) => para.plain(GUTTER).value(&escape(api), BOLD),
+                None => para,
+            }
+        };
+        if place.columns() > place_column {
+            emit(out, p, width, &place, INDENT, "    ");
+            let indent = " ".repeat(column);
+            emit(out, p, width, &rest(Para::new()), &indent, &indent);
+        } else {
+            let pad = " ".repeat(place_column - place.columns());
+            let para = rest(place.plain(&pad).plain(GUTTER));
+            emit(out, p, width, &para, INDENT, "    ");
+        }
+    }
+    out.push('\n');
 }
 
 fn place_para(para: Para, inputs: &Inputs, loc: &Location) -> Para {

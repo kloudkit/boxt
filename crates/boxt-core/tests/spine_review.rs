@@ -5,8 +5,8 @@ use std::io::Cursor;
 use boxt_core::Text;
 use boxt_core::compile_db::CompileDatabaseError;
 use boxt_core::fact::{
-    Directive, Fact, FactError, FactKind, FileKind, GuardChain, GuardError, GuardRegionError,
-    LineRule, PathRule, RegionId,
+    Directive, Fact, FactError, FactKind, FileKind, GuardChain, GuardError, GuardFrame,
+    GuardRegionError, LineRule, PathRule, RegionId,
 };
 use boxt_core::identity::FindingId;
 use boxt_core::input_scope::{self, InputScope};
@@ -839,14 +839,22 @@ fn f7_guards_are_chains_from_the_opening_directive_to_the_branch_holding_the_cod
     let guards = vec![
         GuardChain {
             frames: vec![
-                named(Directive::If, "#if A", Some("A"), false),
+                GuardFrame {
+                    has_token: true,
+                    ..named(Directive::If, "#if A", Some("A"), false)
+                },
                 named(Directive::Else, "#else", None, true),
             ],
+            later: Vec::new(),
             has_alternative: true,
             region: RegionId(1),
         },
         GuardChain {
             frames: vec![named(Directive::Ifdef, "#ifdef B", Some("B"), true)],
+            later: vec![
+                named(Directive::Elifdef, "#elifdef C", Some("C"), false),
+                named(Directive::Else, "#else", None, false),
+            ],
             has_alternative: false,
             region: RegionId(2),
         },
@@ -863,9 +871,81 @@ fn f7_guards_are_chains_from_the_opening_directive_to_the_branch_holding_the_cod
 
     let chain = |frames: &[(Directive, bool)]| GuardChain {
         frames: frames.iter().map(|&(d, h)| frame(d, h)).collect(),
+        later: Vec::new(),
         has_alternative: false,
         region: RegionId(0),
     };
+    let with_later = |frames: &[(Directive, bool)], later: &[(Directive, bool)], alt| GuardChain {
+        later: later
+            .iter()
+            .map(|&(d, has_token)| GuardFrame {
+                has_token,
+                ..frame(d, false)
+            })
+            .collect(),
+        has_alternative: alt,
+        ..chain(frames)
+    };
+    for (frames, later, alt, expected) in [
+        (
+            &[(Directive::Ifdef, true)][..],
+            &[(Directive::Elif, false), (Directive::Else, true)][..],
+            true,
+            Ok(()),
+        ),
+        (
+            &[(Directive::Ifdef, true)][..],
+            &[(Directive::Elif, false)][..],
+            false,
+            Ok(()),
+        ),
+        (
+            &[(Directive::Ifdef, true)][..],
+            &[(Directive::Ifndef, false)][..],
+            false,
+            Err(GuardError::OpenerInsideChain),
+        ),
+        (
+            &[(Directive::Ifdef, true)][..],
+            &[(Directive::Else, false), (Directive::Elif, false)][..],
+            false,
+            Err(GuardError::LaterAfterElse),
+        ),
+        (
+            &[(Directive::Ifdef, false), (Directive::Else, true)][..],
+            &[(Directive::Elif, false)][..],
+            false,
+            Err(GuardError::LaterAfterElse),
+        ),
+        (
+            &[(Directive::Ifdef, true)][..],
+            &[(Directive::Else, true)][..],
+            false,
+            Err(GuardError::AlternativeMismatch),
+        ),
+        (
+            &[(Directive::Ifdef, true)][..],
+            &[(Directive::Else, false)][..],
+            true,
+            Err(GuardError::AlternativeMismatch),
+        ),
+    ] {
+        assert_eq!(
+            with_later(frames, later, alt).validate(),
+            expected,
+            "{frames:?} {later:?}"
+        );
+    }
+    let mut earlier = chain(&[(Directive::Ifdef, false), (Directive::Else, true)]);
+    earlier.frames[0].has_token = true;
+    assert_eq!(earlier.validate(), Err(GuardError::AlternativeMismatch));
+    earlier.has_alternative = true;
+    assert_eq!(earlier.validate(), Ok(()));
+    earlier.frames[1].has_token = true;
+    assert_eq!(earlier.validate(), Ok(()));
+    let mut later_code = chain(&[(Directive::Ifdef, true)]);
+    later_code.later = vec![frame(Directive::Else, true)];
+    assert_eq!(later_code.validate(), Err(GuardError::HoldsCodeNotLast));
     for (frames, expected) in [
         (&[][..], Err(GuardError::Empty)),
         (

@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/windows-api
+behaviour: c
+title: windows-api
+fix: Fix windows-api.
+evidence:
+  found: { id: windows-api-found, text: Found by windows-api }
+match:
+  found:
+    kind: call
+    field: callee
+    pattern: "RegOpenKey*"

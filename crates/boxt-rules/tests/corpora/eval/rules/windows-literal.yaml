@@ -1,0 +1,12 @@
+schema: "1.0"
+id: eval/windows-literal
+behaviour: c
+title: windows-literal
+fix: Fix windows-literal.
+evidence:
+  found: { id: windows-literal-found, text: Found by windows-literal }
+match:
+  found:
+    kind: string_literal
+    field: value
+    pattern: "SOFTWARE*"

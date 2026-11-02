@@ -126,11 +126,13 @@ pub struct GuardFrame {
     pub text: Text,
     pub identifiers: SortedVec<Text>,
     pub holds_code: bool,
+    pub has_token: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GuardChain {
     pub frames: Vec<GuardFrame>,
+    pub later: Vec<GuardFrame>,
     pub has_alternative: bool,
     pub region: RegionId,
 }
@@ -142,6 +144,8 @@ pub enum GuardError {
     OpenerInsideChain,
     ElseNotLast,
     HoldsCodeNotLast,
+    LaterAfterElse,
+    AlternativeMismatch,
 }
 
 impl fmt::Display for GuardError {
@@ -153,6 +157,10 @@ impl fmt::Display for GuardError {
             GuardError::ElseNotLast => "guard chain has a directive after #else",
             GuardError::HoldsCodeNotLast => {
                 "guard chain must hold the code in its last directive only"
+            }
+            GuardError::LaterAfterElse => "guard chain has a later branch after #else",
+            GuardError::AlternativeMismatch => {
+                "guard chain's has_alternative disagrees with its branches' tokens"
             }
         })
     }
@@ -172,8 +180,20 @@ impl GuardChain {
         if rest.iter().any(|f| f.directive == Directive::Else) {
             return Err(GuardError::ElseNotLast);
         }
-        if !last.holds_code || rest.iter().any(|f| f.holds_code) {
+        if !last.holds_code || rest.iter().chain(&self.later).any(|f| f.holds_code) {
             return Err(GuardError::HoldsCodeNotLast);
+        }
+        if self.later.iter().any(|f| f.directive.opens_chain()) {
+            return Err(GuardError::OpenerInsideChain);
+        }
+        if let Some((_, before)) = self.later.split_last()
+            && (last.directive == Directive::Else
+                || before.iter().any(|f| f.directive == Directive::Else))
+        {
+            return Err(GuardError::LaterAfterElse);
+        }
+        if self.has_alternative != rest.iter().chain(&self.later).any(|f| f.has_token) {
+            return Err(GuardError::AlternativeMismatch);
         }
         Ok(())
     }

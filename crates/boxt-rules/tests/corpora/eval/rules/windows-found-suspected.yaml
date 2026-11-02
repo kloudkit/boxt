@@ -1,0 +1,17 @@
+schema: "1.0"
+id: eval/windows-found-suspected
+behaviour: c
+title: windows-found-suspected
+fix: Fix windows-found-suspected.
+evidence:
+  found: { id: registry-open, text: A registry open }
+  suspected: { id: registry-any, text: Any registry call }
+match:
+  found:
+    kind: call
+    field: callee
+    pattern: "RegOpenKey*"
+  suspected:
+    kind: call
+    field: callee
+    pattern: "Reg*"

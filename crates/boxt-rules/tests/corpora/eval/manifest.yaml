@@ -2,4 +2,5 @@ corpus_version: 0.0.1
 behaviours:
   - { id: b, dimension: d }
   - { id: c, dimension: d }
+windows_guard_macros: [_WIN32, _WIN64]
 dynamic_load_symbols: [dlopen]

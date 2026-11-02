@@ -1,0 +1,9 @@
+int read_setting(void)
+{
+#ifdef _WIN32
+    HKEY key;
+    return RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\App", 0, KEY_READ, &key);
+#else
+#error "only Windows is supported"
+#endif
+}

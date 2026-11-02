@@ -168,6 +168,11 @@ fn error_branch_is_no_alternative() {
         vec![(Directive::Ifdef, "#ifdef _WIN32", true)]
     );
     assert!(!guards[0].has_alternative);
+    assert_eq!(guards[0].later.len(), 1);
+    assert_eq!(guards[0].later[0].directive, Directive::Else);
+    assert!(!guards[0].later[0].holds_code);
+    assert!(!guards[0].later[0].has_token);
+    assert!(guards[0].frames[0].has_token);
 }
 
 #[test]
@@ -745,4 +750,36 @@ fn an_extensionless_file_needs_most_lines_readable_and_a_c_construct() {
     assert_eq!(identified("notes", mostly_prose, false), Ok(false));
     assert_eq!(identified("bytes", b"caf\xe9\n", false), Ok(false));
     assert_eq!(identified("empty", b"", false), Ok(false));
+}
+
+#[test]
+fn a_second_else_ends_the_later_branches() {
+    let sink = read(
+        "a.c",
+        "void t(void) {\n#ifdef _WIN32\n  a();\n#else\n  b();\n#else\n  c();\n#elif X\n  d();\n#endif\n}\n",
+    );
+    let calls = calls(&sink);
+    let a = calls.iter().find(|c| c.0 == "a").unwrap();
+    let later: Vec<Directive> = a.4[0].later.iter().map(|f| f.directive).collect();
+    assert_eq!(later, [Directive::Else]);
+    assert!(a.4[0].has_alternative);
+    let b = calls.iter().find(|c| c.0 == "b").unwrap();
+    assert!(b.4[0].later.is_empty());
+    for call in &calls {
+        for chain in call.4 {
+            chain.validate().unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_warning_only_branch_is_no_alternative() {
+    let sink = read(
+        "a.c",
+        "void t(void) {\n#ifdef _WIN32\n  f();\n#else\n#warning \"unsupported\"\n#endif\n}\n",
+    );
+    let calls = calls(&sink);
+    let guards = calls[0].4;
+    assert!(!guards[0].has_alternative);
+    assert!(!guards[0].later[0].has_token);
 }

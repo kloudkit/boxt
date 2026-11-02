@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use boxt_collector::boxt_core::RulesOutput;
 use boxt_collector::boxt_core::fact::Fact;
 use boxt_collector::boxt_core::limits::Limits;
 use boxt_collector::boxt_core::settings::Settings;
@@ -8,13 +9,13 @@ use boxt_collector::boxt_core::verdict::Confidence;
 use boxt_collector::path::text_from_path;
 use boxt_collector::worker::WORKER_SUBCOMMAND;
 use boxt_collector::{RunOptions, run_with};
-use boxt_rules::{Matched, embedded, evaluate, load_tar};
+use boxt_rules::{embedded, evaluate, load_tar};
 
 fn seed_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/source/seed")
 }
 
-fn scan(dir: &Path) -> Matched {
+fn scan(dir: &Path) -> RulesOutput {
     let settings = Settings {
         inputs: vec![text_from_path(dir)],
         targets: Default::default(),
