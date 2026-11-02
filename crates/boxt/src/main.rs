@@ -6,13 +6,15 @@ use std::time::{Duration, Instant};
 
 use boxt_collector::CapAllocator;
 use boxt_collector::bench::{cxx_jobs, measure_reads, parse_in_process};
+use boxt_collector::boxt_core::decode::encoding_from_name;
 use boxt_collector::boxt_core::fact::Fact;
 use boxt_collector::boxt_core::limits::{LimitName, Limits};
-use boxt_collector::boxt_core::outcome::{FileOutcome, sm3_share, verdict_counts};
-use boxt_collector::boxt_core::settings::Settings;
+use boxt_collector::boxt_core::outcome::{FileOutcome, OwnFileRole, sm3_share, verdict_counts};
+use boxt_collector::boxt_core::pattern::path_pattern;
+use boxt_collector::boxt_core::settings::{EncodingDecl, OwnFile, PathPattern, Settings};
 use boxt_collector::boxt_core::verdict::TargetId;
 use boxt_collector::boxt_core::{SortedVec, Text};
-use boxt_collector::path::text_from_path;
+use boxt_collector::path::{match_text, text_from_path};
 use boxt_collector::pool::{self, PoolConfig, default_jobs};
 use boxt_collector::worker::WORKER_SUBCOMMAND;
 use boxt_collector::{Collected, RunOptions, RunStats};
@@ -66,6 +68,18 @@ struct Cli {
         help = "Change one limit, such as file-size=1048576, repeatable"
     )]
     limits: Vec<String>,
+    #[arg(
+        long = "exclude",
+        value_name = "PATTERN",
+        help = "Leave out the files a path pattern matches, relative to the working folder, repeatable; replaces the project file's exclude list"
+    )]
+    excludes: Vec<String>,
+    #[arg(
+        long = "encoding",
+        value_name = "PATTERN=NAME",
+        help = "Read the files a path pattern matches in an encoding, such as legacy/**=windows-1252, repeatable; the first match wins; replaces the project file's encodings list"
+    )]
+    encodings: Vec<String>,
     #[arg(
         long,
         help = "List every file not checked, including each file no reader understands"
@@ -164,7 +178,71 @@ fn main() -> ExitCode {
     }
 }
 
-fn settings(cli: &Cli, file: &FileSettings) -> Result<Settings, String> {
+fn flag_pattern(
+    flag: &str,
+    given: &str,
+    base: &Text,
+    pattern: &str,
+) -> Result<PathPattern, String> {
+    let given_pattern = PathPattern {
+        base: base.clone(),
+        pattern: Text::from(pattern),
+    };
+    path_pattern(&given_pattern.base, &given_pattern.pattern).map_err(|e| {
+        format!(
+            "{flag} {}: the pattern is refused: {e}",
+            boxt_render::escape(&Text::from(given))
+        )
+    })?;
+    Ok(given_pattern)
+}
+
+fn flag_base() -> Result<Text, String> {
+    std::env::current_dir()
+        .and_then(|dir| match_text(&dir))
+        .map_err(|e| format!("cannot find the working folder for --exclude or --encoding: {e}"))
+}
+
+fn excludes(
+    cli: &Cli,
+    file: &FileSettings,
+    base: &dyn Fn() -> Result<Text, String>,
+) -> Result<Vec<PathPattern>, String> {
+    if cli.excludes.is_empty() {
+        return Ok(file.exclude.clone());
+    }
+    let base = base()?;
+    cli.excludes
+        .iter()
+        .map(|given| flag_pattern("--exclude", given, &base, given))
+        .collect()
+}
+
+fn encodings(
+    cli: &Cli,
+    file: &FileSettings,
+    base: &dyn Fn() -> Result<Text, String>,
+) -> Result<Vec<EncodingDecl>, String> {
+    if cli.encodings.is_empty() {
+        return Ok(file.encodings.clone());
+    }
+    let base = base()?;
+    cli.encodings
+        .iter()
+        .map(|given| {
+            let shown = boxt_render::escape(&Text::from(given.as_str()));
+            let (pattern, name) = given
+                .rsplit_once('=')
+                .ok_or_else(|| format!("--encoding {shown}: expected PATTERN=NAME"))?;
+            let pattern = flag_pattern("--encoding", given, &base, pattern)?;
+            let encoding = encoding_from_name(name)
+                .ok_or_else(|| project::encoding_problem(&format!("--encoding {shown}"), name))?;
+            Ok(EncodingDecl { pattern, encoding })
+        })
+        .collect()
+}
+
+fn settings(cli: &Cli, file: &FileSettings, own_path: Option<&Text>) -> Result<Settings, String> {
     let targets = if cli.targets.is_empty() {
         file.targets.clone().unwrap_or_default()
     } else {
@@ -179,12 +257,21 @@ fn settings(cli: &Cli, file: &FileSettings) -> Result<Settings, String> {
     }
     apply_limits(&mut limits, &cli.limits)?;
     limits.validate().map_err(|e| e.to_string())?;
+    let excludes = excludes(cli, file, &flag_base)?;
+    let encodings = encodings(cli, file, &flag_base)?;
     Ok(Settings {
         inputs: cli.inputs.iter().map(|p| text_from_path(p)).collect(),
         targets,
         limits,
-        encodings: Vec::new(),
-        excludes: Vec::new(),
+        encodings,
+        excludes,
+        own_files: own_path
+            .map(|path| OwnFile {
+                path: path.clone(),
+                role: OwnFileRole::ProjectFile,
+            })
+            .into_iter()
+            .collect(),
         ignored_macros: Default::default(),
         jobs: cli.jobs.or(file.jobs),
         compile_database: None,
@@ -197,7 +284,7 @@ fn report(cli: &Cli) -> Result<(), String> {
     if let Some(warning) = project.warning() {
         eprintln!("boxt: warning: {warning}");
     }
-    let settings = settings(cli, &project.settings)?;
+    let settings = settings(cli, &project.settings, project.own_path.as_ref())?;
     #[cfg(feature = "fault-fixtures")]
     if cli.inputs.iter().any(|p| {
         p.file_name()
@@ -238,6 +325,7 @@ fn report(cli: &Cli) -> Result<(), String> {
             roots: &roots,
             compile_database_used: false,
             project_file: &project.file,
+            excludes: &settings.excludes,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -305,6 +393,7 @@ fn collect(
         limits,
         encodings: Vec::new(),
         excludes: Vec::new(),
+        own_files: Vec::new(),
         ignored_macros: Default::default(),
         jobs,
         compile_database: None,
@@ -579,6 +668,7 @@ mod tests {
     fn a_flag_beats_the_file_setting_by_setting_and_a_target_list_replaces_the_file_list() {
         let file = project::parse(
             "schema: \"1.0\"\ntargets: [docker-default]\njobs: 3\nlimits: {work: 5, memory: 7}\n",
+            &Text::from("/repo"),
         )
         .unwrap();
         let cli = Cli::try_parse_from([
@@ -590,14 +680,14 @@ mod tests {
             "memory=1",
         ])
         .unwrap();
-        let merged = settings(&cli, &file).unwrap();
+        let merged = settings(&cli, &file, None).unwrap();
         let targets: Vec<&str> = merged.targets.iter().map(|t| t.as_str()).collect();
         assert_eq!(targets, ["rootless-podman"]);
         assert_eq!(merged.limits.get(LimitName::Work), 5);
         assert_eq!(merged.limits.get(LimitName::Memory), 1);
         assert_eq!(merged.jobs, NonZeroU32::new(3));
         let flags_only = Cli::try_parse_from(["boxt", "src", "--jobs", "2"]).unwrap();
-        let merged = settings(&flags_only, &file).unwrap();
+        let merged = settings(&flags_only, &file, None).unwrap();
         let targets: Vec<&str> = merged.targets.iter().map(|t| t.as_str()).collect();
         assert_eq!(targets, ["docker-default"]);
         assert_eq!(merged.jobs, NonZeroU32::new(2));
@@ -607,9 +697,97 @@ mod tests {
     #[test]
     fn with_no_file_the_defaults_apply() {
         let cli = Cli::try_parse_from(["boxt", "src"]).unwrap();
-        let merged = settings(&cli, &FileSettings::default()).unwrap();
+        let merged = settings(&cli, &FileSettings::default(), None).unwrap();
         assert!(merged.targets.is_empty());
+        assert!(merged.excludes.is_empty() && merged.encodings.is_empty());
+        assert!(merged.own_files.is_empty());
         assert_eq!(merged.limits, Limits::default());
         assert_eq!(merged.jobs, None);
+    }
+
+    #[test]
+    fn an_exclude_or_encoding_flag_replaces_the_file_list_and_keeps_the_working_folder_base() {
+        let file = project::parse(
+            "schema: \"1.0\"\nexclude: [a/**]\nencodings: [{path: x/**, encoding: latin-1}]\n",
+            &Text::from("/repo/sub"),
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from(["boxt", "src"]).unwrap();
+        let own = Text::from("/repo/sub/boxt.yaml");
+        let merged = settings(&cli, &file, Some(&own)).unwrap();
+        assert_eq!(merged.excludes, file.exclude);
+        assert_eq!(merged.encodings, file.encodings);
+        assert_eq!(
+            merged.own_files,
+            [OwnFile {
+                path: own,
+                role: OwnFileRole::ProjectFile
+            }]
+        );
+        let cli = Cli::try_parse_from([
+            "boxt",
+            "src",
+            "--exclude",
+            "b/**",
+            "--exclude",
+            "c/*.c",
+            "--encoding",
+            "l=e/**=WINDOWS-1252",
+        ])
+        .unwrap();
+        let base = Text::from("/cwd");
+        let fixed = || Ok(base.clone());
+        let at = |p: &str| PathPattern {
+            base: base.clone(),
+            pattern: Text::from(p),
+        };
+        assert_eq!(
+            excludes(&cli, &file, &fixed).unwrap(),
+            [at("b/**"), at("c/*.c")]
+        );
+        assert_eq!(
+            encodings(&cli, &file, &fixed).unwrap(),
+            [EncodingDecl {
+                pattern: at("l=e/**"),
+                encoding: boxt_collector::boxt_core::settings::Encoding::WindowsCodePage(1252),
+            }]
+        );
+        let merged = settings(&cli, &file, None).unwrap();
+        assert_eq!(merged.excludes.len(), 2);
+        assert_ne!(merged.excludes, file.exclude);
+    }
+
+    #[test]
+    fn bad_exclude_and_encoding_flags_name_the_flag() {
+        let file = FileSettings::default();
+        let fixed = || Ok(Text::from("/cwd"));
+        let refused = |args: &[&str]| {
+            let mut all = vec!["boxt", "src"];
+            all.extend_from_slice(args);
+            let cli = Cli::try_parse_from(all).unwrap();
+            excludes(&cli, &file, &fixed)
+                .map(|_| ())
+                .and_then(|()| encodings(&cli, &file, &fixed).map(|_| ()))
+                .unwrap_err()
+        };
+        assert_eq!(
+            refused(&["--exclude", "../x/**"]),
+            "--exclude ../x/**: the pattern is refused: the pattern has a '.' or '..' segment"
+        );
+        assert!(
+            refused(&["--exclude", ""])
+                .starts_with("--exclude : the pattern is refused: the pattern is empty")
+        );
+        assert_eq!(
+            refused(&["--encoding", "legacy/**"]),
+            "--encoding legacy/**: expected PATTERN=NAME"
+        );
+        assert!(
+            refused(&["--encoding", "legacy/**=windows-437"]).starts_with(
+                "--encoding legacy/**=windows-437: 'windows-437' is not an encoding boxt reads"
+            )
+        );
+        assert!(refused(&["--encoding", "a=utf-16"]).contains("use utf-16le or utf-16be"));
+        assert!(refused(&["--encoding", "/a=utf-8"]).contains("the pattern is absolute"));
     }
 }

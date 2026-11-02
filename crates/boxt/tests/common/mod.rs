@@ -34,6 +34,7 @@ pub fn verdict(inputs: &[PathBuf]) -> Result {
         limits: Limits::default(),
         encodings: Vec::new(),
         excludes: Vec::new(),
+        own_files: Vec::new(),
         ignored_macros: Default::default(),
         jobs: None,
         compile_database: None,
@@ -64,6 +65,7 @@ pub fn verdict(inputs: &[PathBuf]) -> Result {
             roots: &roots,
             compile_database_used: false,
             project_file: &ProjectFile::NoneFound,
+            excludes: &[],
         },
     )
     .unwrap()

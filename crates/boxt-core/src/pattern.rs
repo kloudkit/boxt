@@ -17,6 +17,11 @@ pub enum PatternMode {
 pub enum PatternError {
     Empty,
     Glob(String),
+    Absolute,
+    DotSegment,
+    LeadingDot,
+    EmptySegment,
+    NotUtf8,
 }
 
 impl fmt::Display for PatternError {
@@ -24,6 +29,17 @@ impl fmt::Display for PatternError {
         match self {
             PatternError::Empty => f.write_str("the pattern is empty"),
             PatternError::Glob(e) => write!(f, "the pattern is not a valid glob: {e}"),
+            PatternError::Absolute => {
+                f.write_str("the pattern is absolute; it must be relative to its base folder")
+            }
+            PatternError::DotSegment => f.write_str("the pattern has a '.' or '..' segment"),
+            PatternError::LeadingDot => f.write_str(
+                "the pattern starts with './'; drop it, since a pattern is already relative to its base folder",
+            ),
+            PatternError::EmptySegment => f.write_str(
+                "the pattern has an empty segment, such as a trailing '/' or '//'; write a folder as 'name/**'",
+            ),
+            PatternError::NotUtf8 => f.write_str("the pattern or its base folder is not UTF-8"),
         }
     }
 }
@@ -36,6 +52,7 @@ pub struct Pattern {
     mode: PatternMode,
     under: bool,
     matchers: Vec<GlobMatcher>,
+    folded: Option<Vec<GlobMatcher>>,
 }
 
 const BACKSLASH: char = '\u{E000}';
@@ -89,10 +106,14 @@ fn escape(literal: &str) -> String {
 }
 
 fn glob(source: &str, mode: PatternMode) -> Result<GlobMatcher, PatternError> {
+    build(source, mode, false)
+}
+
+fn build(source: &str, mode: PatternMode, fold: bool) -> Result<GlobMatcher, PatternError> {
     GlobBuilder::new(&encode_pattern(source))
         .literal_separator(mode == PatternMode::Path)
         .backslash_escape(true)
-        .case_insensitive(false)
+        .case_insensitive(fold)
         .build()
         .map(|g| g.compile_matcher())
         .map_err(|e| PatternError::Glob(e.kind().to_string()))
@@ -107,6 +128,7 @@ pub fn compile(source: &str, mode: PatternMode) -> Result<Pattern, PatternError>
         mode,
         under: false,
         matchers: vec![glob(source, mode)?],
+        folded: None,
     })
 }
 
@@ -129,7 +151,65 @@ pub fn path_under(prefix: &str) -> Result<Pattern, PatternError> {
             glob(&literal, PatternMode::Path)?,
             glob(&below, PatternMode::Path)?,
         ],
+        folded: None,
     })
+}
+
+fn is_absolute(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    bytes.first() == Some(&b'/')
+        || (bytes.len() >= 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes.get(2), None | Some(b'/')))
+}
+
+fn normalized_base(base: &Text) -> Result<String, PatternError> {
+    let normalized = normalize_value_path(base);
+    let text = std::str::from_utf8(normalized.as_bytes()).map_err(|_| PatternError::NotUtf8)?;
+    Ok(escape(text.trim_end_matches('/')))
+}
+
+fn path_matcher(source: String, glob_source: &str) -> Result<Pattern, PatternError> {
+    Ok(Pattern {
+        source,
+        mode: PatternMode::Path,
+        under: false,
+        matchers: vec![build(glob_source, PatternMode::Path, false)?],
+        folded: Some(vec![build(glob_source, PatternMode::Path, true)?]),
+    })
+}
+
+pub fn path_pattern(base: &Text, pattern: &Text) -> Result<Pattern, PatternError> {
+    let pattern = pattern.as_str().ok_or(PatternError::NotUtf8)?;
+    if pattern.is_empty() {
+        return Err(PatternError::Empty);
+    }
+    if is_absolute(pattern) {
+        return Err(PatternError::Absolute);
+    }
+    if pattern.starts_with("./") {
+        return Err(PatternError::LeadingDot);
+    }
+    if pattern.split('/').any(|s| s == "." || s == "..") {
+        return Err(PatternError::DotSegment);
+    }
+    if pattern.split('/').any(str::is_empty) {
+        return Err(PatternError::EmptySegment);
+    }
+    let glob_source = format!("{}/{pattern}", normalized_base(base)?);
+    path_matcher(pattern.to_owned(), &glob_source)
+}
+
+pub fn literal_path(path: &Text) -> Result<Pattern, PatternError> {
+    if path.as_bytes().is_empty() {
+        return Err(PatternError::Empty);
+    }
+    let literal = normalized_base(path)?;
+    path_matcher(
+        String::from_utf8_lossy(path.as_bytes()).into_owned(),
+        &literal,
+    )
 }
 
 impl Pattern {
@@ -151,6 +231,15 @@ impl Pattern {
         self.matchers
             .iter()
             .any(|m| m.is_match_candidate(&candidate))
+    }
+
+    pub fn is_match_folded(&self, value: &[u8]) -> bool {
+        let Some(folded) = &self.folded else {
+            return self.is_match(value);
+        };
+        let value = encode_value(value);
+        let candidate = Candidate::from_bytes(value.as_ref());
+        folded.iter().any(|m| m.is_match_candidate(&candidate))
     }
 
     fn key(&self) -> (&str, PatternMode, bool) {
@@ -243,6 +332,89 @@ mod tests {
             !compile("a\\*b", PatternMode::Text)
                 .unwrap()
                 .is_match(b"axb")
+        );
+    }
+
+    fn at(base: &str, pattern: &str) -> Pattern {
+        path_pattern(&Text::from(base), &Text::from(pattern)).unwrap()
+    }
+
+    #[test]
+    fn a_path_pattern_matches_below_its_base_only() {
+        let p = at("/repo/./sub/", "gen/**");
+        assert!(p.is_match(b"/repo/sub/gen/x.c"));
+        assert!(p.is_match(b"/repo/sub/gen/a/b.c"));
+        assert!(!p.is_match(b"/repo/gen/x.c"));
+        assert!(!p.is_match(b"/repo/sub/gen"));
+        let star = at("/repo", "src/*.c");
+        assert!(star.is_match(b"/repo/src/a.c"));
+        assert!(!star.is_match(b"/repo/src/a/b.c"));
+        assert!(at("/", "repo/**").is_match(b"/repo/a"));
+        assert!(at("C:/Users/me", "x/*").is_match(b"C:/Users/me/x/a"));
+        assert_eq!(at("/repo", "gen/**").source(), "gen/**");
+    }
+
+    #[test]
+    fn a_base_is_taken_literally() {
+        let p = at("/a*b/[x]{y,z}", "*.c");
+        assert!(p.is_match(b"/a*b/[x]{y,z}/m.c"));
+        assert!(!p.is_match(b"/axb/x/m.c"));
+        assert!(at("/a\\b", "*.c").is_match(b"/a\\b/m.c"));
+    }
+
+    #[test]
+    fn folding_is_a_separate_matcher() {
+        let p = at("/repo", "third_party/**");
+        assert!(!p.is_match(b"/repo/Third_Party/a.c"));
+        assert!(p.is_match_folded(b"/repo/Third_Party/a.c"));
+        assert!(!at("/Repo", "x").is_match(b"/repo/x"));
+        assert!(at("/Repo", "x").is_match_folded(b"/repo/x"));
+        let text = compile("Bind", PatternMode::Text).unwrap();
+        assert!(!text.is_match_folded(b"bind"));
+    }
+
+    #[test]
+    fn a_literal_path_matches_only_itself() {
+        let p = literal_path(&Text::from("/repo/./boxt.yaml")).unwrap();
+        assert!(p.is_match(b"/repo/boxt.yaml"));
+        assert!(!p.is_match(b"/repo/boxt.yamlx"));
+        assert!(!p.is_match(b"/repo/sub/boxt.yaml"));
+        assert!(p.is_match_folded(b"/REPO/Boxt.yaml"));
+        assert!(
+            literal_path(&Text::from("/r/[a]*.yaml"))
+                .unwrap()
+                .is_match(b"/r/[a]*.yaml")
+        );
+        assert_eq!(
+            literal_path(&Text::default()).unwrap_err(),
+            PatternError::Empty
+        );
+    }
+
+    #[test]
+    fn bad_path_patterns_are_refused() {
+        let base = Text::from("/repo");
+        let refused = |p: &str| path_pattern(&base, &Text::from(p)).unwrap_err();
+        assert_eq!(refused(""), PatternError::Empty);
+        assert_eq!(refused("/x/**"), PatternError::Absolute);
+        assert_eq!(refused("C:/x"), PatternError::Absolute);
+        assert_eq!(refused("c:"), PatternError::Absolute);
+        assert_eq!(refused("../x/**"), PatternError::DotSegment);
+        assert_eq!(refused("a/./b"), PatternError::DotSegment);
+        assert_eq!(refused("a/.."), PatternError::DotSegment);
+        assert_eq!(refused("./gen/**"), PatternError::LeadingDot);
+        assert_eq!(refused("."), PatternError::DotSegment);
+        assert_eq!(refused("gen/"), PatternError::EmptySegment);
+        assert_eq!(refused("a//b"), PatternError::EmptySegment);
+        assert!(refused("gen/").to_string().contains("'name/**'"));
+        assert!(refused("./a").to_string().contains("drop it"));
+        assert!(matches!(refused("[a"), PatternError::Glob(_)));
+        assert!(path_pattern(&base, &Text::from("..x/.y")).is_ok());
+        assert!(path_pattern(&base, &Text::from("c:x")).is_ok());
+        #[cfg(unix)]
+        assert_eq!(
+            path_pattern(&Text::from_bytes(b"/r\xff".to_vec()), &Text::from("x")).unwrap_err(),
+            PatternError::NotUtf8
         );
     }
 

@@ -5,12 +5,14 @@ use boxt_render::boxt_core::labels;
 use boxt_render::boxt_core::limits::LimitName;
 use boxt_render::boxt_core::location::{Frame, FrameKind, InputRef, Location, RelPath, Scope};
 use boxt_render::boxt_core::message::{CanonicalKey, EntryPath, RegionReason};
+use boxt_render::boxt_core::outcome::OwnFileRole;
 use boxt_render::boxt_core::outcome::{
     Count, Details, FileOutcome, FileShare, LineShare, NotCheckedReason, Outcome, Sm3,
     VerdictCounts,
 };
+use boxt_render::boxt_core::settings::PathPattern;
 use boxt_render::boxt_core::verdict::{
-    BehaviourId, Confidence, Evidence, EvidenceId, Finding, Group, GroupKey, LineRange,
+    BehaviourId, Confidence, Evidence, EvidenceId, Excluded, Finding, Group, GroupKey, LineRange,
     NotCheckedEntry, ProjectFile, ReportedFinding, Result, RuleId, RuleSection, TargetId,
     TargetVerdict, Tier, TierRange,
 };
@@ -98,6 +100,7 @@ fn sample(host_dependent: bool) -> Result {
     Result {
         versions: Versions::CURRENT,
         project_file: ProjectFile::NoneFound,
+        excluded: Excluded::default(),
         input_scope: InputScope::SourceOnly,
         input_scope_text: input_scope::text(InputScope::SourceOnly, false),
         counts: VerdictCounts {
@@ -283,6 +286,87 @@ fn the_project_file_line_sits_under_the_files_read_line() {
         named.contains("not checked\n  project file: ci/scan.yaml (named by --project)\n\n"),
         "{named}"
     );
+}
+
+fn exclude(pattern: &[u8], count: u64) -> (PathPattern, u64) {
+    (
+        PathPattern {
+            base: Text::from("/repo"),
+            pattern: Text::from_bytes(pattern.to_vec()),
+        },
+        count,
+    )
+}
+
+#[test]
+fn each_exclude_and_own_file_is_listed_under_the_project_file_line() {
+    let mut result = sample(false);
+    result.project_file = ProjectFile::Found {
+        path: Text::from("/repo/boxt.yaml"),
+        above_vcs_root: false,
+    };
+    result.excluded = Excluded {
+        patterns: vec![
+            exclude(b"third_party/**", 3),
+            exclude(b"gen/*.c", 1),
+            exclude(b"unused/**", 0),
+        ],
+        own_files: vec![(
+            loc("boxt.yaml", None, Scope::File),
+            OwnFileRole::ProjectFile,
+        )],
+    };
+    let report = terminal(&result, false);
+    assert!(
+        report.contains(
+            "  project file: /repo/boxt.yaml\n  exclude third_party/** · 3 files\n  exclude gen/*.c · 1 file\n  exclude unused/** · 0 files\n  excluded boxt.yaml · boxt's project file\n\n"
+        ),
+        "{report}"
+    );
+    let styled = terminal(&result, true);
+    assert!(styled.contains("\x1b[2mexclude\x1b[0m"), "{styled:?}");
+}
+
+#[test]
+fn an_own_file_in_a_second_input_is_prefixed_with_its_input() {
+    let mut result = sample(false);
+    let mut own = loc("boxt.yaml", None, Scope::File);
+    own.input = InputRef {
+        index: 1,
+        given: Text::from("lib"),
+    };
+    result.excluded = Excluded {
+        patterns: Vec::new(),
+        own_files: vec![(own, OwnFileRole::ProjectFile)],
+    };
+    let report = terminal(&result, false);
+    assert!(
+        report.contains("\n  excluded lib: boxt.yaml · boxt's project file\n"),
+        "{report}"
+    );
+    assert!(report.contains("src: "), "{report}");
+}
+
+#[test]
+fn hostile_excludes_and_own_files_are_escaped() {
+    let mut result = sample(false);
+    result.excluded = Excluded {
+        patterns: vec![exclude(b"x\x1b[31m/\xff\xe2\x80\xae**", 2)],
+        own_files: vec![(
+            loc("ev\u{202e}il/boxt.yaml", None, Scope::File),
+            OwnFileRole::ProjectFile,
+        )],
+    };
+    let report = terminal(&result, false);
+    assert!(
+        report.contains("  exclude x\\x1b[31m/\\xff\\u{202e}** · 2 files\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains("  excluded ev\\u{202e}il/boxt.yaml · boxt's project file\n"),
+        "{report}"
+    );
+    assert!(!report.contains('\x1b'), "{report}");
 }
 
 #[test]

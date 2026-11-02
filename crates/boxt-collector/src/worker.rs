@@ -12,11 +12,12 @@ use boxt_core::message::{
 use boxt_core::outcome::{
     Details, FaultKind, FileOutcome, IoKind, NotCheckedReason, Outcome, line_count,
 };
+use boxt_core::pattern::{Pattern, PatternError, path_pattern};
 use boxt_core::read::{Exceeded, FactSink, NotRead, ReadCtx, Reader, WorkBudget};
 use boxt_core::settings::{Encoding, WorkerSettings};
 use boxt_read_cpp::CppReader;
 
-use crate::path::{declared_for, job_path, text_from_path};
+use crate::path::{job_path, match_text, matches};
 pub use crate::router::file_kind_by_name;
 use crate::router::{ByName, Fetched, Routed, by_name, fetch, route_content};
 use crate::{alloc, os};
@@ -65,8 +66,17 @@ pub fn run() -> ExitCode {
         }
     };
 
+    let context = match Context::new(settings) {
+        Ok(context) => context,
+        Err(e) => {
+            eprintln!("boxt worker: an encoding declaration does not compile: {e}");
+            return ExitCode::from(STARTUP_PROTOCOL_EXIT as u8);
+        }
+    };
+    let settings = &context.settings;
+
     os::commit_stack();
-    if let Err(e) = set_cap(&settings) {
+    if let Err(e) = set_cap(settings) {
         eprintln!("boxt worker: cannot set its memory cap: {e}");
         return ExitCode::from(STARTUP_CAP_EXIT as u8);
     }
@@ -84,7 +94,7 @@ pub fn run() -> ExitCode {
         };
         match msg {
             CollectorMsg::Job(job) => {
-                if run_job(&job, &settings, &tables, &mut output).is_err() {
+                if run_job(&job, &context, &tables, &mut output).is_err() {
                     return ExitCode::SUCCESS;
                 }
             }
@@ -119,16 +129,49 @@ fn send(out: &mut impl Write, msg: &WorkerMsg, max_len: u64) -> io::Result<()> {
     out.write_all(&frame)
 }
 
+pub struct Context {
+    pub settings: WorkerSettings,
+    encodings: Vec<(Pattern, Encoding)>,
+}
+
+impl Context {
+    pub fn new(settings: WorkerSettings) -> Result<Self, PatternError> {
+        let encodings = settings
+            .encodings
+            .iter()
+            .map(|decl| {
+                path_pattern(&decl.pattern.base, &decl.pattern.pattern).map(|p| (p, decl.encoding))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Context {
+            settings,
+            encodings,
+        })
+    }
+
+    fn declared(&self, on_disk: &std::path::Path) -> Option<Encoding> {
+        if self.encodings.is_empty() {
+            return None;
+        }
+        let path = match_text(on_disk).ok()?;
+        self.encodings
+            .iter()
+            .find(|(pattern, _)| matches(pattern, &path))
+            .map(|(_, encoding)| *encoding)
+    }
+}
+
 pub fn run_job(
     job: &Job,
-    settings: &WorkerSettings,
+    context: &Context,
     tables: &MacroTables,
     out: &mut impl Write,
 ) -> io::Result<()> {
+    let settings = &context.settings;
     let max_len = settings.limits.get(LimitName::EntryMessageBytes);
     let outcome = match job.kind {
-        JobKind::Route => route(job, settings, tables, out)?,
-        JobKind::Definitions => definitions(job, settings, out)?,
+        JobKind::Route => route(job, context, tables, out)?,
+        JobKind::Definitions => definitions(job, context, out)?,
         JobKind::CompileDatabase => not_checked(NotCheckedReason::NoReader, None),
     };
     send(
@@ -180,7 +223,8 @@ fn job_file_on_disk(job: &Job) -> Option<std::path::PathBuf> {
     }
 }
 
-fn load(job: &Job, settings: &WorkerSettings) -> Result<Loaded, Outcome> {
+fn load(job: &Job, context: &Context) -> Result<Loaded, Outcome> {
+    let settings = &context.settings;
     let Some(path) = job.path().cloned() else {
         return Err(not_checked(NotCheckedReason::NoReader, None));
     };
@@ -200,8 +244,7 @@ fn load(job: &Job, settings: &WorkerSettings) -> Result<Loaded, Outcome> {
         Fetched::Bytes(bytes) => bytes,
         Fetched::NotChecked(file, kind) => return Err(Outcome::new(file, kind)),
     };
-    let on_disk_text = text_from_path(&on_disk);
-    let encoding = settings.resolve_encoding(|p| declared_for(p, &on_disk_text));
+    let encoding = job_path(job).and_then(|path| context.declared(&path));
     let lines = line_count(&bytes, encoding);
     Ok(Loaded {
         name,
@@ -227,8 +270,9 @@ fn identify(loaded: Loaded, settings: &WorkerSettings) -> Prepared {
     }
 }
 
-fn prepare(job: &Job, settings: &WorkerSettings) -> Prepared {
-    let loaded = match load(job, settings) {
+fn prepare(job: &Job, context: &Context) -> Prepared {
+    let settings = &context.settings;
+    let loaded = match load(job, context) {
         Ok(loaded) => loaded,
         Err(outcome) => return Prepared::Done(outcome),
     };
@@ -244,10 +288,11 @@ fn prepare(job: &Job, settings: &WorkerSettings) -> Prepared {
 
 fn route(
     job: &Job,
-    settings: &WorkerSettings,
+    context: &Context,
     tables: &MacroTables,
     out: &mut impl Write,
 ) -> io::Result<Outcome> {
+    let settings = &context.settings;
     let max_len = settings.limits.get(LimitName::EntryMessageBytes);
 
     #[cfg(feature = "fault-fixtures")]
@@ -255,7 +300,7 @@ fn route(
         fixtures::trigger_early(name, job, out, max_len);
     }
 
-    let prepared = prepare(job, settings);
+    let prepared = prepare(job, context);
     let file_kind = match &prepared {
         Prepared::Done(outcome) => outcome.file_kind,
         Prepared::Cxx(..) => Some(FileKind::Source),
@@ -312,7 +357,8 @@ fn route(
     Ok(Outcome::new(file, file_kind).with_lines(lines))
 }
 
-fn definitions(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io::Result<Outcome> {
+fn definitions(job: &Job, context: &Context, out: &mut impl Write) -> io::Result<Outcome> {
+    let settings = &context.settings;
     let max_len = settings.limits.get(LimitName::EntryMessageBytes);
 
     #[cfg(feature = "fault-fixtures")]
@@ -320,7 +366,7 @@ fn definitions(job: &Job, settings: &WorkerSettings, out: &mut impl Write) -> io
         fixtures::trigger_definitions(name);
     }
 
-    let loaded = match prepare(job, settings) {
+    let loaded = match prepare(job, context) {
         Prepared::Done(outcome) => return Ok(outcome),
         Prepared::Cxx(ready) => ready.0,
     };
@@ -629,7 +675,7 @@ mod tests {
     use boxt_core::settings::{Encoding, EncodingDecl, PathPattern};
 
     use super::*;
-    use crate::path::text_from_path;
+    use crate::path::{match_text, text_from_path};
 
     struct Dir(std::path::PathBuf);
 
@@ -661,8 +707,8 @@ mod tests {
         }
     }
 
-    fn settings(limits: Limits, encodings: Vec<EncodingDecl>) -> WorkerSettings {
-        WorkerSettings { limits, encodings }
+    fn settings(limits: Limits, encodings: Vec<EncodingDecl>) -> Context {
+        Context::new(WorkerSettings { limits, encodings }).unwrap()
     }
 
     fn messages(bytes: &[u8]) -> Vec<WorkerMsg> {
@@ -740,17 +786,23 @@ mod tests {
         );
         assert_eq!(undeclared.lines.map(|l| l.lines), Some(1));
 
-        let decl = EncodingDecl {
+        let decl = |pattern: &str, encoding| EncodingDecl {
             pattern: PathPattern {
-                base: text_from_path(&root.0),
-                pattern: Text::from("**/*.c"),
+                base: match_text(&root.0).unwrap(),
+                pattern: Text::from(pattern),
             },
-            encoding: Encoding::Latin1,
+            encoding,
         };
         let mut out = Vec::new();
         run_job(
             &job(&root, "a.c"),
-            &settings(Limits::default(), vec![decl]),
+            &settings(
+                Limits::default(),
+                vec![
+                    decl("**/*.c", Encoding::Latin1),
+                    decl("**/*.c", Encoding::Utf8),
+                ],
+            ),
             &MacroTables::new(),
             &mut out,
         )

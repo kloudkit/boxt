@@ -5,9 +5,13 @@ use std::path::{Path, PathBuf};
 use boxt_core::Text;
 use boxt_core::location::{InputRef, RelPath};
 use boxt_core::message::JobFile;
-use boxt_core::outcome::{IoKind, LinkTarget, NotCheckedReason, SpecialKind};
+use boxt_core::outcome::{
+    IoKind, LinkTarget, NotCheckedReason, OutOfScopeCause, OwnFileRole, SpecialKind,
+};
+use boxt_core::pattern::Pattern;
+use boxt_core::settings::PathPattern;
 
-use crate::path::{path_from_text, text_from_path};
+use crate::path::{join_match_text, match_text, matches, path_from_text, text_from_path};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkedInput {
@@ -30,11 +34,46 @@ impl Item {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemKind {
     File { size: u64 },
     NotChecked(NotCheckedReason),
+    OutOfScope(OutOfScopeCause),
 }
+
+#[derive(Debug, Clone, Default)]
+pub struct Scope {
+    pub own_files: Vec<(Pattern, OwnFileRole)>,
+    pub excludes: Vec<(PathPattern, Pattern)>,
+}
+
+impl Scope {
+    pub fn is_empty(&self) -> bool {
+        self.own_files.is_empty() && self.excludes.is_empty()
+    }
+
+    pub fn cause(&self, path: &Text) -> Option<OutOfScopeCause> {
+        if let Some((_, role)) = self.own_files.iter().find(|(p, _)| matches(p, path)) {
+            return Some(OutOfScopeCause::OwnFile(*role));
+        }
+        self.excludes
+            .iter()
+            .find(|(_, p)| matches(p, path))
+            .map(|(given, _)| OutOfScopeCause::Pattern(given.clone()))
+    }
+
+    fn below_cause(&self, path: &Text) -> Option<OutOfScopeCause> {
+        let mut probe = path.as_bytes().to_vec();
+        probe.extend_from_slice(FOLDER_PROBE.as_bytes());
+        let probe = Text::from_bytes(probe);
+        self.excludes
+            .iter()
+            .find(|(_, p)| matches(p, &probe))
+            .map(|(given, _)| OutOfScopeCause::Pattern(given.clone()))
+    }
+}
+
+const FOLDER_PROBE: &str = "/\u{E001}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalkError {
@@ -68,15 +107,45 @@ impl std::fmt::Display for WalkError {
 
 impl std::error::Error for WalkError {}
 
-pub fn walk(inputs: &[Text]) -> Result<Vec<WalkedInput>, WalkError> {
+pub fn walk(inputs: &[Text], scope: &Scope) -> Result<Vec<WalkedInput>, WalkError> {
     inputs
         .iter()
         .enumerate()
         .map(|(index, given)| {
             let index = u32::try_from(index).unwrap_or(u32::MAX);
-            walk_input(index, given)
+            let mut walked = walk_input(index, given)?;
+            mark_out_of_scope(&mut walked, scope)?;
+            Ok(walked)
         })
         .collect()
+}
+
+fn mark_out_of_scope(walked: &mut WalkedInput, scope: &Scope) -> Result<(), WalkError> {
+    if scope.is_empty() {
+        return Ok(());
+    }
+    let index = walked.input.index;
+    let root = path_from_text(&walked.input.given).ok_or(WalkError::InputPath { index })?;
+    let root = match_text(&root).map_err(|e| WalkError::Input {
+        index,
+        kind: IoKind::from_io(e.kind()),
+    })?;
+    for item in &mut walked.items {
+        let path = match &item.file {
+            JobFile::WholeInput(_) => root.clone(),
+            JobFile::InInput(rel) => join_match_text(&root, rel),
+            JobFile::Setting(_) => continue,
+        };
+        let cause = scope.cause(&path).or_else(|| {
+            matches!(item.kind, ItemKind::NotChecked(_))
+                .then(|| scope.below_cause(&path))
+                .flatten()
+        });
+        if let Some(cause) = cause {
+            item.kind = ItemKind::OutOfScope(cause);
+        }
+    }
+    Ok(())
 }
 
 fn walk_input(index: u32, given: &Text) -> Result<WalkedInput, WalkError> {
@@ -364,7 +433,7 @@ mod tests {
             .map(|i| {
                 (
                     String::from_utf8_lossy(i.path().as_bytes()).into_owned(),
-                    i.kind,
+                    i.kind.clone(),
                 )
             })
             .collect()
@@ -385,7 +454,7 @@ mod tests {
         symlink("hop", root.join("hop2")).unwrap();
         symlink("sub/../real.c", root.join("hop")).unwrap();
         rustix::fs::mkfifoat(rustix::fs::CWD, root.join("p"), rustix::fs::Mode::RUSR).unwrap();
-        let walked = walk(&[text_from_path(root)]).unwrap();
+        let walked = walk(&[text_from_path(root)], &Scope::default()).unwrap();
         let link = |t| ItemKind::NotChecked(NotCheckedReason::Symlink(t));
         assert_eq!(
             kinds(&walked[0]),
@@ -414,10 +483,13 @@ mod tests {
         fs::create_dir_all(&real).unwrap();
         fs::write(real.join("a.c"), b"int x;\n").unwrap();
         symlink("real", d.0.join("root")).unwrap();
-        let walked = walk(&[
-            text_from_path(&d.0.join("root")),
-            text_from_path(&real.join("a.c")),
-        ])
+        let walked = walk(
+            &[
+                text_from_path(&d.0.join("root")),
+                text_from_path(&real.join("a.c")),
+            ],
+            &Scope::default(),
+        )
         .unwrap();
         assert_eq!(
             kinds(&walked[0]),
@@ -426,11 +498,86 @@ mod tests {
         assert_eq!(walked[1].input.index, 1);
         assert!(matches!(walked[1].items[0].file, JobFile::WholeInput(_)));
         assert_eq!(
-            walk(&[text_from_path(&d.0.join("missing"))]),
+            walk(&[text_from_path(&d.0.join("missing"))], &Scope::default()),
             Err(WalkError::Input {
                 index: 0,
                 kind: IoKind::NotFound
             })
+        );
+    }
+
+    #[test]
+    fn own_files_come_before_excludes_and_the_first_exclude_wins() {
+        use boxt_core::pattern::{literal_path, path_pattern};
+        let d = dir("scope");
+        let root = &d.0;
+        fs::create_dir_all(root.join("gen/deep")).unwrap();
+        fs::write(root.join("boxt.yaml"), b"schema: \"1.0\"\n").unwrap();
+        fs::write(root.join("a.c"), b"int a;\n").unwrap();
+        fs::write(root.join("gen/b.c"), b"int b;\n").unwrap();
+        fs::write(root.join("gen/deep/c.c"), b"int c;\n").unwrap();
+        let base = match_text(root).unwrap();
+        let given = |p: &str| PathPattern {
+            base: base.clone(),
+            pattern: Text::from(p),
+        };
+        let compiled = |p: &str| (given(p), path_pattern(&base, &Text::from(p)).unwrap());
+        let scope = Scope {
+            own_files: vec![(
+                literal_path(&match_text(&root.join("boxt.yaml")).unwrap()).unwrap(),
+                OwnFileRole::ProjectFile,
+            )],
+            excludes: vec![compiled("gen/*.c"), compiled("gen/**"), compiled("*")],
+        };
+        let walked = walk(&[text_from_path(root)], &scope).unwrap();
+        let out = |p: &str| ItemKind::OutOfScope(OutOfScopeCause::Pattern(given(p)));
+        assert_eq!(
+            kinds(&walked[0]),
+            vec![
+                ("a.c".into(), out("*")),
+                (
+                    "boxt.yaml".into(),
+                    ItemKind::OutOfScope(OutOfScopeCause::OwnFile(OwnFileRole::ProjectFile))
+                ),
+                ("gen/b.c".into(), out("gen/*.c")),
+                ("gen/deep/c.c".into(), out("gen/**")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_not_checked_item_is_excluded_when_its_contents_would_be() {
+        use std::os::unix::fs::symlink;
+
+        use boxt_core::pattern::path_pattern;
+        let d = dir("folder-probe");
+        let root = &d.0;
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::create_dir_all(root.join("third_party")).unwrap();
+        fs::write(root.join("a.c"), b"int a;\n").unwrap();
+        fs::write(root.join("real/b.c"), b"int b;\n").unwrap();
+        symlink("real", root.join("gen")).unwrap();
+        symlink("../real", root.join("third_party/link")).unwrap();
+        let base = match_text(root).unwrap();
+        let given = |p: &str| PathPattern {
+            base: base.clone(),
+            pattern: Text::from(p),
+        };
+        let compiled = |p: &str| (given(p), path_pattern(&base, &Text::from(p)).unwrap());
+        let scope = Scope {
+            own_files: Vec::new(),
+            excludes: vec![compiled("gen/**"), compiled("third_party/**")],
+        };
+        let walked = walk(&[text_from_path(root)], &scope).unwrap();
+        let out = |p: &str| ItemKind::OutOfScope(OutOfScopeCause::Pattern(given(p)));
+        assert_eq!(
+            kinds(&walked[0]),
+            vec![
+                ("a.c".into(), ItemKind::File { size: 7 }),
+                ("gen".into(), out("gen/**")),
+                ("real/b.c".into(), ItemKind::File { size: 7 }),
+                ("third_party/link".into(), out("third_party/**")),
+            ]
         );
     }
 }

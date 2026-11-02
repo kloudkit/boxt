@@ -6,11 +6,12 @@ use boxt_core::fact::GuardChain;
 use boxt_core::identity::FindingId;
 use boxt_core::labels;
 use boxt_core::location::{Location, Scope};
+use boxt_core::outcome::OutOfScopeCause;
 use boxt_core::outcome::{Count, Details, FileOutcome, NotCheckedReason, Outcome, Sm3};
 use boxt_core::settings::Encoding;
 use boxt_core::verdict::{
-    Confidence, Group, GroupKey, LineRange, NotCheckedEntry, ProjectFile, ReportedFinding, Result,
-    TargetVerdict, Tier, TierRange,
+    Confidence, Excluded, Group, GroupKey, LineRange, NotCheckedEntry, ProjectFile,
+    ReportedFinding, Result, TargetVerdict, Tier, TierRange,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -25,13 +26,22 @@ struct Inputs {
 impl Inputs {
     fn of(result: &Result) -> Inputs {
         let mut given: Vec<(u32, String)> = Vec::new();
-        let locations = result.findings.iter().map(|f| &f.finding.location).chain(
-            result.not_checked.iter().map(|e| match e {
+        let locations = result
+            .findings
+            .iter()
+            .map(|f| &f.finding.location)
+            .chain(result.not_checked.iter().map(|e| match e {
                 NotCheckedEntry::File { location, .. }
                 | NotCheckedEntry::Regions { location, .. }
                 | NotCheckedEntry::DynamicLoad { location, .. } => location,
-            }),
-        );
+            }))
+            .chain(
+                result
+                    .excluded
+                    .own_files
+                    .iter()
+                    .map(|(location, _)| location),
+            );
         for loc in locations {
             if !given.iter().any(|(i, _)| *i == loc.input.index) {
                 given.push((loc.input.index, escape(&loc.input.given)));
@@ -101,7 +111,7 @@ pub fn terminal(result: &Result, options: &TerminalOptions) -> String {
     }
     boxed(&mut out, &p, width, YELLOW, &header);
     out.push('\n');
-    targets(&mut out, &p, width, result);
+    targets(&mut out, &p, width, &inputs, result);
     out.push('\n');
     out.push_str(&p.paint(DIM, &"─".repeat(width)));
     out.push('\n');
@@ -215,7 +225,7 @@ fn unmapped_count(target: &TargetVerdict) -> u64 {
     u64::try_from(target.unmapped.len()).unwrap_or(u64::MAX)
 }
 
-fn targets(out: &mut String, p: &Painter, width: usize, result: &Result) {
+fn targets(out: &mut String, p: &Painter, width: usize, inputs: &Inputs, result: &Result) {
     let rows: Vec<&TargetVerdict> = result.targets.iter().collect();
     let with_unmapped = rows.iter().any(|t| !t.unmapped.is_empty());
     let mut headers = vec!["target", "verdict", "found", "suspected", "allowed"];
@@ -302,6 +312,39 @@ fn targets(out: &mut String, p: &Painter, width: usize, result: &Result) {
         INDENT,
         "    ",
     );
+    for para in excluded(inputs, &result.excluded) {
+        emit(out, p, width, &para, INDENT, "    ");
+    }
+}
+
+fn excluded(inputs: &Inputs, excluded: &Excluded) -> Vec<Para> {
+    let patterns = excluded.patterns.iter().map(|(pattern, count)| {
+        Para::new()
+            .text(&format!("{} ", labels::EXCLUDE), DIM)
+            .value(&escape(&pattern.pattern), DIM)
+            .text(&format!(" · {}", labels::file_count(*count)), DIM)
+    });
+    let own_files = excluded.own_files.iter().map(|(loc, role)| {
+        let para = Para::new().text(&format!("{} ", labels::EXCLUDED), DIM);
+        let mut parts: Vec<String> = loc.frames.iter().map(|f| escape(&f.name)).collect();
+        if let Some(path) = &loc.path {
+            parts.push(escape(path.as_text()));
+        }
+        let para = if inputs.multi {
+            para.value(&format!("{}:", inputs.name(loc.input.index)), DIM)
+                .text(" ", DIM)
+        } else {
+            para
+        };
+        para.value(&parts.join("!"), DIM).text(
+            &format!(
+                " · {}",
+                labels::out_of_scope_cause(&OutOfScopeCause::OwnFile(*role))
+            ),
+            DIM,
+        )
+    });
+    patterns.chain(own_files).collect()
 }
 
 fn project_file(project_file: &ProjectFile) -> Para {

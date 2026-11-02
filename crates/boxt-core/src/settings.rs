@@ -6,6 +6,7 @@ use crate::compile_db::CompileDatabaseError;
 use crate::limits::Limits;
 use crate::location::InputRef;
 use crate::message::{Job, JobFile, JobKind};
+use crate::outcome::OwnFileRole;
 use crate::sorted::SortedVec;
 use crate::text::Text;
 use crate::verdict::TargetId;
@@ -57,12 +58,19 @@ pub struct CompileDatabaseSetting {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct OwnFile {
+    pub path: Text,
+    pub role: OwnFileRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Settings {
     pub inputs: Vec<Text>,
     pub targets: SortedVec<TargetId>,
     pub limits: Limits,
     pub encodings: Vec<EncodingDecl>,
     pub excludes: Vec<PathPattern>,
+    pub own_files: Vec<OwnFile>,
     pub ignored_macros: SortedVec<Text>,
     pub jobs: Option<NonZeroU32>,
     pub compile_database: Option<CompileDatabaseSetting>,
@@ -122,6 +130,10 @@ mod tests {
                 base: Text::from("/repo"),
                 pattern: Text::from("vendor/**"),
             }],
+            own_files: vec![OwnFile {
+                path: Text::from("/repo/boxt.yaml"),
+                role: OwnFileRole::ProjectFile,
+            }],
             ignored_macros: vec![Text::from("DEBUG")].into(),
             jobs: NonZeroU32::new(2),
             compile_database: None,
@@ -134,13 +146,23 @@ mod tests {
 
     #[test]
     fn zero_jobs_is_refused() {
-        let json = r#"{"inputs":[],"targets":[],"limits":LIMITS,"encodings":[],"excludes":[],"ignored_macros":[],"jobs":0,"compile_database":null}"#
+        let json = r#"{"inputs":[],"targets":[],"limits":LIMITS,"encodings":[],"excludes":[],"own_files":[{"path":"/repo/boxt.yaml","role":"project_file"}],"ignored_macros":[],"jobs":0,"compile_database":null}"#
             .replace("LIMITS", &serde_json::to_string(&Limits::default()).unwrap());
         assert!(serde_json::from_str::<Settings>(&json).is_err());
         let ok = json.replace(r#""jobs":0"#, r#""jobs":4"#);
+        let parsed = serde_json::from_str::<Settings>(&ok).unwrap();
+        assert_eq!(parsed.jobs, NonZeroU32::new(4));
         assert_eq!(
-            serde_json::from_str::<Settings>(&ok).unwrap().jobs,
-            NonZeroU32::new(4)
+            parsed.own_files,
+            [OwnFile {
+                path: Text::from("/repo/boxt.yaml"),
+                role: OwnFileRole::ProjectFile,
+            }]
         );
+        let missing = ok.replace(
+            r#""own_files":[{"path":"/repo/boxt.yaml","role":"project_file"}],"#,
+            "",
+        );
+        assert!(serde_json::from_str::<Settings>(&missing).is_err());
     }
 }

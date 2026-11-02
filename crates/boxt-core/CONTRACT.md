@@ -34,7 +34,9 @@ alone.
 | `Sm3.uncounted`, `.incomplete` | sorted `CanonicalKey`s: canonical order |
 | a run's `CollectedFile`s | sorted by `CollectedFile.key`, a `CanonicalKey` |
 | `Settings.inputs` | input order as given; it is the `InputRef.index` |
-| `Settings.excludes` | as given |
+| `Settings.excludes`, `Result.excluded.patterns` | as given; the first exclude that matches a path takes it |
+| `Settings.own_files` | as the bin lists them |
+| `Result.excluded.own_files` | canonical order, by the own file's `CanonicalKey` |
 | `Settings.encodings`, `WorkerSettings.encodings` | as given; the first declaration that matches a path wins |
 | `Settings.targets`, `.ignored_macros` | sorted |
 | `RuleCoverage.file_kinds` | sorted alternatives, each a sorted list of `FileKind`s; `RuleCoverage` refuses an empty alternative and any duplicate |
@@ -113,6 +115,12 @@ decodes.
   1250–1258, 10000, 10007, 20866, 20932, 21866, 28592–28598, 28603, 28605, 38598, 50220,
   51932 and 54936. Bytes that do not decode, or a code page not listed, are
   `InvalidForDeclaredEncoding`. No replacement character is ever inserted.
+- Names (Story 2.2): `decode::encoding_from_name(name) -> Option<Encoding>` and
+  `encoding_name(Encoding) -> String` are built from the same table `decode` uses.
+  Matched ignoring ASCII case, the names are `utf-8`, `utf-16le`, `utf-16be`, `latin-1`
+  and `windows-N` for each code page above, `N` in decimal with no leading zero. Any other
+  name is `None`: a bare `utf-16`, a `cpN` form, and a code page `decode` cannot decode, so
+  the bin never accepts an encoding the workers refuse.
 - A UTF-8 byte-order mark stays in `text` as U+FEFF, so the decoded text has exactly
   `line_count(bytes, declared)` lines in every case; the reader treats it as blank space.
   Lines and every byte offset a reader uses refer to the decoded text.
@@ -121,7 +129,8 @@ decodes.
 
 - A `Location` is the input (`index`, and `given`, the path as given), the container frames,
   the path relative to the innermost root, an optional line and a scope. It compares
-  byte-exactly. Nothing in `boxt-core` folds case.
+  byte-exactly. Nothing in `boxt-core` folds case except `Pattern::is_match_folded`, which
+  only the collector calls, on Windows, for on-disk paths (§ Patterns).
 - `path` is `None` when the location is the innermost frame itself: a package's own facts,
   and its install scripts. A location with no frames always has a path.
 - Lines are 1-based. No location has line 0.
@@ -303,6 +312,27 @@ treat `\` as an escape on every host. `path_under(X)` normalizes `X` with
 `PatternError::Empty`; a glob that does not compile is `PatternError::Glob`. A rule's
 `pattern` test uses path mode on a `path` field and text mode on any other.
 
+`pattern::path_pattern(base, pattern)` (Story 2.2, AD-20) is the matcher for excludes and
+encoding declarations. It escapes `base`, normalized with `normalize_value_path`, so the
+base matches literally, then appends `/` and the pattern as written, in path mode. It
+refuses an empty pattern (`Empty`), an absolute one (`Absolute`: a leading `/`, or a drive
+`X:` alone or before `/`), one starting with `./` (`LeadingDot`), one with a `.` or `..`
+segment (`DotSegment`) and one with an empty segment (`EmptySegment`: a trailing `/` or
+`//`, which could never match); a base or
+pattern that is not UTF-8 is `NotUtf8`. `pattern::literal_path(path)` matches one
+normalized path exactly, for boxt's own files. Both keep a second matcher set built with
+`case_insensitive(true)`, which `Pattern::is_match_folded` uses; `compile` and
+`path_under` build none, and on them `is_match_folded` is `is_match`. Folding is the
+caller's choice: only the collector folds, only on Windows, and only after the exact match
+fails; never inside a container, on a fact value or in a rule test.
+
+The collector matches a pattern against a file's match text: `path::match_text(path)` is
+`std::path::absolute`, then `lexical` (`.` dropped, `..` popped by name, no link followed),
+then `display_text_from_path`, so `/` separates on every host. A walked item's match text
+is its input root's match text joined by `/` with its `RelPath`; a file input's is the
+root's own. `path::matches(pattern, text)` is `is_match`, then `is_match_folded` when
+`cfg!(windows)`.
+
 ## Rule matching (AD-9, FR-15, FR-44, Story 1.8)
 
 `boxt_rules::evaluate(corpus, facts) -> Matched{findings, observations}` is the one matcher.
@@ -417,12 +447,17 @@ are:
   attaches it and `macros()` reads it. With none attached the C/C++ reader expands
   nothing. The worker attaches its tree's complete table, when it holds one, to every
   `Route` job. Readers build each fact's location with `ctx.at(line, scope)`. Readers
-  never see an encoding pattern: the router resolves the declaration with
-  `WorkerSettings::resolve_encoding`, the first declaration whose pattern matches the
-  file's path in its innermost root, and passes only the result (`None` when nothing
-  matches). It matches as the collector does: byte-exact, with no case folding, except
-  AD-15's Windows fallback for paths on disk, which encoding declarations follow too;
-  never inside a container. The budget is private: a reader can only spend it, through
+  never see an encoding pattern: each worker compiles `WorkerSettings.encodings` with
+  `path_pattern` once, when its settings arrive, and the router resolves a job's
+  declaration as the first whose pattern `matches` the match text of the job's path
+  (the input as given joined with the job's `RelPath`, so a linked file input matches by
+  its given name, as the walk does), passing only the result (`None` when nothing
+  matches). It matches as the collector does: exact, then folded on Windows only; never
+  inside a container. The worker applies this rule in `worker::Context::declared`, over
+  the patterns it compiled; it does not call `WorkerSettings::resolve_encoding`, which
+  keeps the same first-match rule for callers with their own matcher. A declaration that
+  does not compile ends the worker with `STARTUP_PROTOCOL_EXIT`; the bin and
+  `run::scope` refuse one first. The budget is private: a reader can only spend it, through
   `work`, `buffer`, `release`, `file_size`, `entry` and `decompression`, and read it
   through `budget()`. Only the router builds a context with a given budget (`with_budget`)
   and takes it back (`into_budget`).
@@ -607,8 +642,9 @@ are:
   `Collected` holds the files (`SortedVec<CollectedFile>`), each read file's facts with
   its outcome's `CanonicalKey` (facts in `Location` order, a stable sort over the reader's
   order), `macro_tables_cut` and the trees whose definitions were host-dependent.
-  `RunError` is `NoInputs`, `Walk`, `CompileDatabase`, `Pool`, `Executable`, `MacroTable`
-  and `NothingRead` (no `Read` outcome); the bin maps each to exit 2.
+  `RunError` is `NoInputs`, `Walk`, `CompileDatabase`, `Pool`, `Executable`, `MacroTable`,
+  `NothingRead` (no `Read` outcome) and `Pattern` (an exclude, own file or encoding
+  declaration that does not compile, which the bin refuses first); the bin maps each to exit 2.
 - The main process reads only metadata. Each input is `metadata`'d, which follows a link,
   so a linked root is followed once. A file input is one `WholeInput` job named by the
   file name as given; the worker opens its canonical path (§ Jobs). A directory input is
@@ -629,6 +665,18 @@ are:
 - Walk-level outcomes have `file_kind: None`, the walk's location and key
   `at(index, path, [])`. Each input's entries sort by `RelPath` bytes, so the walk order is
   canonical order.
+- Scope (FR-5, Story 2.2): `walk(inputs, &Scope)` matches every item it lists, files and
+  not-checked folders alike, by its match text. An item that `Settings.own_files` matches
+  is `ItemKind::OutOfScope(OwnFile(role))`, ahead of any exclude; otherwise the first
+  `Settings.excludes` pattern that matches makes it `OutOfScope(Pattern(p))`, `p` as given.
+  A `NotChecked` item that nothing matches directly (a link, an unreadable folder, a
+  folder with an unsafe entry name) is tried once more as its match text plus `/` and the
+  probe segment U+E001, against the excludes only, so a folder whose contents an exclude
+  covers is out of scope with them.
+  Excluded items are still walked, so they are counted, but the run splits them out before
+  the `TotalEntries` cut: they never take an entry, are never dispatched, and each becomes
+  one walk-level `FileOutcome::OutOfScope{cause}`. A folder below an excluded folder is
+  still descended into.
 - `TotalEntries` counts walked entries in canonical order. Leaf files are one entry each
   and their count is known from the walk, so the cut is the walk's canonical prefix: the
   rest is never dispatched, and becomes one `Aggregate{LimitExceeded(TotalEntries),
@@ -838,7 +886,8 @@ are:
 - `verdict_counts` gives the verdict-line counts: files read are the `Read` outcomes; files
   not checked are the `NotChecked` outcomes plus each `Aggregate`'s count. An `Aggregate`
   with no count adds `at_least`, never below 1, and makes the total `AtLeast`.
-  `OutOfScope` adds nothing: it feeds only the FR-5 excluded-path counts.
+  `OutOfScope` adds nothing: it feeds only the FR-5 excluded-path counts in
+  `Result.excluded`.
   Every sum in `verdict_counts` and `sm3_share` saturates at `u64::MAX` rather than
   overflowing.
 - SM-3 (AD-13, PRD §8 as amended) is `sm3_share(&CollectedFile…) -> Sm3`: a `LineShare`
@@ -1013,7 +1062,14 @@ are:
   largest length the frame prefix can carry; above it is `LimitError::AboveMax`.
 - `Settings.jobs` is `Option<NonZeroU32>`: `None` means one worker per core.
 - `Settings` is built only by the bin. Path patterns keep their base and are never
-  rewritten. A worker receives `Settings::worker()` and nothing else.
+  rewritten: a pattern from the project file has the file's folder as its base, one from a
+  flag the working folder, each as a match text. A flag list replaces the file's list. The
+  bin checks every pattern with `path_pattern` and every encoding name with
+  `encoding_from_name` before any job, so a bad one exits 2 naming its key or flag.
+  `Settings.own_files` lists boxt's own files as `OwnFile{path, role}`, `path` a match
+  text; Story 2.2 adds the project file in use (`ProjectFile`). A worker receives
+  `Settings::worker()` and nothing else, so declared encodings reach it only through
+  `WorkerSettings.encodings`.
 - The rule-schema, profile-format, waiver-file, project-file and JSON-output versions are
   the `SchemaVersion{major, minor}` constants in `version`, printed, parsed and serialized
   as the string `"major.minor"` (`"1.0"`). An added field or kind bumps the minor; anything else bumps the major.
@@ -1033,7 +1089,8 @@ are:
   and replaced `NotCheckedEntry::Region` with the per-file `Regions`; by the same operator
   decision 1.0 is re-recorded once more rather than bumped. Story 2.1 added
   `Result.project_file`; by the same operator decision 1.0 is re-recorded, since nothing
-  has shipped. `RULE_SCHEMA_VERSION` stays
+  has shipped. Story 2.2 added `Result.excluded`; by the same operator decision 1.0 is
+  re-recorded once more. `RULE_SCHEMA_VERSION` stays
   1.0, since no `Fact` changed, and its snapshot is unchanged. The worker messages and `Job`
   carry no version: both ends are the same binary.
 
@@ -1065,8 +1122,14 @@ place a `Result` is built, and does not resolve targets again. `VerdictInput` ho
 types only: the run's `files`, the rules' `findings` and `observations`,
 `macro_tables_cut`, `host_dependent_trees`, `roots` (the absolute form of each input,
 indexed by `InputRef.index`, supplied by the caller: verdict reads no filesystem),
-`compile_database_used` and `project_file` (copied into `Result.project_file`). Verdict
-never sees facts.
+`compile_database_used`, `project_file` (copied into `Result.project_file`) and
+`excludes` (the run's `Settings.excludes`). Verdict never sees facts.
+
+- **Excluded (FR-5, Story 2.2).** `Result.excluded` is `Excluded{patterns, own_files}`.
+  `patterns` holds every exclude in settings order with the number of `OutOfScope`
+  outcomes whose cause is that pattern, `0` included. `own_files` holds each
+  `OutOfScope{OwnFile(role)}` outcome's location and role, in canonical order. Neither
+  counts as read or not checked, and neither is a waiver.
 
 - **Targets (FR-22).** With no target named every profile applies, in `TargetId` order;
   otherwise exactly the named ones. An unknown id is

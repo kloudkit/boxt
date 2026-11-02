@@ -5,15 +5,18 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use boxt_collector::path::text_from_path;
-use boxt_collector::walk::walk;
+use boxt_collector::path::{match_text, text_from_path};
+use boxt_collector::walk::{Scope, walk};
 use boxt_collector::worker::WORKER_SUBCOMMAND;
 use boxt_collector::{CapAllocator, Collected, RunError, RunOptions, run_with};
+use boxt_core::Text;
 use boxt_core::fact::FileKind;
 use boxt_core::limits::{LimitName, Limits};
 use boxt_core::message::CollectedFile;
-use boxt_core::outcome::{Details, FileOutcome, LinkTarget, NotCheckedReason, SpecialKind};
-use boxt_core::settings::Settings;
+use boxt_core::outcome::{
+    Details, FileOutcome, LinkTarget, NotCheckedReason, OutOfScopeCause, OwnFileRole, SpecialKind,
+};
+use boxt_core::settings::{Encoding, EncodingDecl, OwnFile, PathPattern, Settings};
 
 #[global_allocator]
 static ALLOCATOR: CapAllocator = CapAllocator;
@@ -52,6 +55,19 @@ fn main() -> ExitCode {
         (
             "dropped_definitions_are_noted",
             dropped_definitions_are_noted,
+        ),
+        (
+            "excluded_files_are_out_of_scope_and_never_cut",
+            excluded_files_are_out_of_scope_and_never_cut,
+        ),
+        ("a_bad_exclude_is_a_run_error", a_bad_exclude_is_a_run_error),
+        (
+            "a_bad_encoding_pattern_is_a_run_error",
+            a_bad_encoding_pattern_is_a_run_error,
+        ),
+        (
+            "an_excluded_file_input_is_out_of_scope",
+            an_excluded_file_input_is_out_of_scope,
         ),
     ];
     #[cfg(unix)]
@@ -165,6 +181,7 @@ fn settings(inputs: &[&Path], limits: Limits, jobs: Option<u32>) -> Settings {
         limits,
         encodings: Vec::new(),
         excludes: Vec::new(),
+        own_files: Vec::new(),
         ignored_macros: Default::default(),
         jobs: jobs.and_then(NonZeroU32::new),
         compile_database: None,
@@ -197,7 +214,7 @@ fn assert_exactly_one_outcome(tree: &Tree, collected: &Collected) {
     let mut sorted = keys.clone();
     sorted.dedup();
     assert_eq!(keys, sorted, "{:?}", tree.0);
-    let walked = walk(&[text_from_path(&tree.0)]).unwrap();
+    let walked = walk(&[text_from_path(&tree.0)], &Scope::default()).unwrap();
     let paths: Vec<String> = walked[0]
         .items
         .iter()
@@ -762,4 +779,108 @@ fn a_second_fault_resumes_to_an_aggregate() {
     );
     assert_eq!(get(&collected, "a.c").outcome.file, FileOutcome::Read);
     assert_eq!(get(&collected, "z.c").outcome.file, FileOutcome::Read);
+}
+
+fn excluded_files_are_out_of_scope_and_never_cut() {
+    let tree = Tree::new("excluded");
+    tree.file("a.c", &c_body(0))
+        .file("boxt.yaml", b"schema: \"1.0\"\n")
+        .file("third_party/x.c", &c_body(1))
+        .file("third_party/y.c", &c_body(2))
+        .file("third_party/z/w.c", &c_body(3));
+    let base = match_text(&tree.0).unwrap();
+    let exclude = PathPattern {
+        base: base.clone(),
+        pattern: Text::from("third_party/**"),
+    };
+    let limits = Limits::default().with(LimitName::TotalEntries, 1).unwrap();
+    let mut settings = settings(&[&tree.0], limits, None);
+    settings.excludes = vec![exclude.clone()];
+    settings.own_files = vec![OwnFile {
+        path: match_text(&tree.0.join("boxt.yaml")).unwrap(),
+        role: OwnFileRole::ProjectFile,
+    }];
+    let collected = collect(&settings).unwrap();
+    assert_exactly_one_outcome(&tree, &collected);
+    let outcomes: Vec<(String, FileOutcome)> = collected
+        .files
+        .iter()
+        .map(|f| (path_of(f), f.outcome.file.clone()))
+        .collect();
+    let excluded = FileOutcome::OutOfScope {
+        cause: OutOfScopeCause::Pattern(exclude),
+    };
+    assert_eq!(
+        outcomes,
+        [
+            ("a.c".to_string(), FileOutcome::Read),
+            (
+                "boxt.yaml".to_string(),
+                FileOutcome::OutOfScope {
+                    cause: OutOfScopeCause::OwnFile(OwnFileRole::ProjectFile)
+                }
+            ),
+            ("third_party/x.c".to_string(), excluded.clone()),
+            ("third_party/y.c".to_string(), excluded.clone()),
+            ("third_party/z/w.c".to_string(), excluded),
+        ]
+    );
+    assert!(
+        collected
+            .facts
+            .iter()
+            .all(|f| f.key.job_path.as_bytes() == b"a.c")
+    );
+}
+
+fn a_bad_exclude_is_a_run_error() {
+    let tree = Tree::new("bad-exclude");
+    tree.file("a.c", &c_body(0));
+    let mut settings = settings(&[&tree.0], Limits::default(), None);
+    settings.excludes = vec![PathPattern {
+        base: text_from_path(&tree.0),
+        pattern: Text::from("../x/**"),
+    }];
+    assert!(matches!(collect(&settings), Err(RunError::Pattern { .. })));
+}
+
+fn a_bad_encoding_pattern_is_a_run_error() {
+    let tree = Tree::new("bad-encoding");
+    tree.file("a.c", &c_body(0));
+    let mut settings = settings(&[&tree.0], Limits::default(), None);
+    settings.encodings = vec![EncodingDecl {
+        pattern: PathPattern {
+            base: match_text(&tree.0).unwrap(),
+            pattern: Text::from("legacy/../x"),
+        },
+        encoding: Encoding::Latin1,
+    }];
+    assert!(matches!(collect(&settings), Err(RunError::Pattern { .. })));
+}
+
+fn an_excluded_file_input_is_out_of_scope() {
+    let lone = Tree::new("lone-input");
+    lone.file("lone.c", &c_body(0));
+    let other = Tree::new("lone-other");
+    other.file("a.c", &c_body(1));
+    let exclude = PathPattern {
+        base: match_text(&lone.0).unwrap(),
+        pattern: Text::from("lone.c"),
+    };
+    let mut settings = settings(&[&lone.0.join("lone.c"), &other.0], Limits::default(), None);
+    settings.excludes = vec![exclude.clone()];
+    let collected = collect(&settings).unwrap();
+    let first: Vec<&CollectedFile> = collected
+        .files
+        .iter()
+        .filter(|f| f.key.input_index == 0)
+        .collect();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].outcome.file,
+        FileOutcome::OutOfScope {
+            cause: OutOfScopeCause::Pattern(exclude)
+        }
+    );
+    assert!(collected.facts.iter().all(|f| f.key.input_index != 0));
 }

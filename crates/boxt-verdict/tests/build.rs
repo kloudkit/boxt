@@ -6,8 +6,10 @@ use boxt_verdict::boxt_core::message::{
     CanonicalKey, CollectedFile, EntryPath, Region, RegionReason,
 };
 use boxt_verdict::boxt_core::outcome::{
-    Count, Details, FileOutcome, NotCheckedReason, Outcome, SpecialKind,
+    Count, Details, FileOutcome, NotCheckedReason, OutOfScopeCause, Outcome, OwnFileRole,
+    SpecialKind,
 };
+use boxt_verdict::boxt_core::settings::PathPattern;
 use boxt_verdict::boxt_core::verdict::{
     BehaviourId, BehaviourTier, Confidence, Control, ControlId, Evidence, EvidenceId, Finding,
     GroupKey, LineRange, NotCheckedEntry, Observation, Profile, ProjectFile, Result, RuleId,
@@ -150,6 +152,7 @@ struct Run {
     host_dependent_trees: SortedVec<u32>,
     compile_database_used: bool,
     project_file: ProjectFile,
+    excludes: Vec<PathPattern>,
 }
 
 impl Run {
@@ -164,6 +167,7 @@ impl Run {
             host_dependent_trees: SortedVec::new(),
             compile_database_used: false,
             project_file: ProjectFile::NoneFound,
+            excludes: Vec::new(),
         }
     }
 
@@ -181,6 +185,7 @@ impl Run {
                 roots: &self.roots,
                 compile_database_used: self.compile_database_used,
                 project_file: &self.project_file,
+                excludes: &self.excludes,
             },
         )
     }
@@ -262,6 +267,65 @@ fn the_result_carries_the_project_file() {
     };
     run.project_file = found.clone();
     assert_eq!(run.build().unwrap().project_file, found);
+}
+
+#[test]
+fn excluded_files_are_counted_per_exclude_and_own_files_are_listed() {
+    let pattern = |p: &str| PathPattern {
+        base: Text::from("/src"),
+        pattern: Text::from(p),
+    };
+    let out = |cause| Outcome::new(FileOutcome::OutOfScope { cause }, None);
+    let mut run = Run::new(Vec::new());
+    run.excludes = vec![pattern("z/**"), pattern("unused/**"), pattern("a/**")];
+    run.files = vec![
+        read_source("main.c", 40),
+        file(
+            "a/x.c",
+            out(OutOfScopeCause::Pattern(pattern("a/**"))),
+            Vec::new(),
+        ),
+        file(
+            "z/1.c",
+            out(OutOfScopeCause::Pattern(pattern("z/**"))),
+            Vec::new(),
+        ),
+        file(
+            "z/2.c",
+            out(OutOfScopeCause::Pattern(pattern("z/**"))),
+            Vec::new(),
+        ),
+        file(
+            "sub/boxt.yaml",
+            out(OutOfScopeCause::OwnFile(OwnFileRole::ProjectFile)),
+            Vec::new(),
+        ),
+        file(
+            "boxt.yaml",
+            out(OutOfScopeCause::OwnFile(OwnFileRole::ProjectFile)),
+            Vec::new(),
+        ),
+    ]
+    .into();
+    let result = run.build().unwrap();
+    assert_eq!(
+        result.excluded.patterns,
+        [
+            (pattern("z/**"), 2),
+            (pattern("unused/**"), 0),
+            (pattern("a/**"), 1)
+        ]
+    );
+    let own: Vec<&[u8]> = result
+        .excluded
+        .own_files
+        .iter()
+        .map(|(l, _)| l.path.as_ref().unwrap().as_bytes())
+        .collect();
+    assert_eq!(own, [b"boxt.yaml".as_slice(), b"sub/boxt.yaml"]);
+    assert_eq!(result.counts.read, 1);
+    assert_eq!(result.counts.not_checked, Count::Exact(0));
+    assert!(result.not_checked.is_empty());
 }
 
 #[test]

@@ -25,18 +25,21 @@ use boxt_core::message::{
 };
 use boxt_core::outcome::{
     Count, Details, FaultKind, FileOutcome, LineCount, NotCheckedReason, Outcome, OutcomeError,
-    line_count, sm3_share, verdict_counts,
+    OwnFileRole, line_count, sm3_share, verdict_counts,
 };
 use boxt_core::read::{
     Container, ContainerReader, Entry, EntryKind, EntryName, Exceeded, FactSink, Input, NotRead,
     RATIO_FLOOR, ReadCtx, ReadResult, Reader, WorkBudget,
 };
-use boxt_core::settings::{CompileDatabaseSetting, Encoding, Settings, WorkerSettings};
+use boxt_core::settings::{
+    CompileDatabaseSetting, Encoding, PathPattern, Settings, WorkerSettings,
+};
 use boxt_core::shell::{self, is_shell_interpreter};
 use boxt_core::verdict::{
-    BehaviourId, Confidence, CoverageError, Evidence, EvidenceId, Finding, Group, GroupKey,
-    LineRange, NotCheckedEntry, Observation, ProjectFile, ReportedFinding, Result as VerdictResult,
-    RuleCoverage, RuleId, RuleSection, TargetId, TargetVerdict, Tier, TierRange,
+    BehaviourId, Confidence, CoverageError, Evidence, EvidenceId, Excluded, Finding, Group,
+    GroupKey, LineRange, NotCheckedEntry, Observation, ProjectFile, ReportedFinding,
+    Result as VerdictResult, RuleCoverage, RuleId, RuleSection, TargetId, TargetVerdict, Tier,
+    TierRange,
 };
 use boxt_core::version::{RULE_SCHEMA_VERSION, SchemaVersion, Versions};
 
@@ -1090,6 +1093,7 @@ fn f10_the_compile_database_is_a_setting_job_outside_the_run() {
         limits: Limits::default(),
         encodings: vec![],
         excludes: vec![],
+        own_files: vec![],
         ignored_macros: Default::default(),
         jobs: None,
         compile_database: Some(CompileDatabaseSetting {
@@ -1321,6 +1325,25 @@ fn sample_result() -> VerdictResult {
         project_file: ProjectFile::Found {
             path: Text::from("/repo/boxt.yaml"),
             above_vcs_root: true,
+        },
+        excluded: Excluded {
+            patterns: vec![
+                (
+                    PathPattern {
+                        base: Text::from("/repo"),
+                        pattern: Text::from("third_party/**"),
+                    },
+                    3,
+                ),
+                (
+                    PathPattern {
+                        base: Text::from_bytes(vec![b'/', 0xff]),
+                        pattern: Text::from("unused/**"),
+                    },
+                    0,
+                ),
+            ],
+            own_files: vec![(at("boxt.yaml", None), OwnFileRole::ProjectFile)],
         },
         input_scope: InputScope::SourceOnly,
         input_scope_text: input_scope::text(InputScope::SourceOnly, true),

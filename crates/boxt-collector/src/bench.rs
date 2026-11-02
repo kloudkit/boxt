@@ -14,7 +14,7 @@ use boxt_core::read::{Exceeded, FactSink, ReadCtx, Reader};
 use boxt_read_cpp::{CppReader, Grammar};
 
 use crate::path::{job_path, text_from_path};
-use crate::walk::{ItemKind, walk};
+use crate::walk::{ItemKind, Scope, walk};
 
 pub struct Walked {
     pub jobs: Vec<Job>,
@@ -22,7 +22,7 @@ pub struct Walked {
 }
 
 pub fn cxx_jobs(root: &Path) -> io::Result<Walked> {
-    let walked = walk(&[text_from_path(root)]).map_err(io::Error::other)?;
+    let walked = walk(&[text_from_path(root)], &Scope::default()).map_err(io::Error::other)?;
     let mut jobs = Vec::new();
     let mut skipped = 0;
     for input in walked {
@@ -37,7 +37,7 @@ pub fn cxx_jobs(root: &Path) -> io::Result<Walked> {
                     });
                 }
                 ItemKind::File { .. } => {}
-                ItemKind::NotChecked(_) => skipped += 1,
+                ItemKind::NotChecked(_) | ItemKind::OutOfScope(_) => skipped += 1,
             }
         }
     }
@@ -181,7 +181,7 @@ pub fn measure_reads(
 
     use crate::router::{ByName, Fetched, Routed, by_name, fetch, route_content};
 
-    let walked = walk(inputs).map_err(io::Error::other)?;
+    let walked = walk(inputs, &Scope::default()).map_err(io::Error::other)?;
     let mut files = Vec::new();
     for input in walked {
         for item in input.items {

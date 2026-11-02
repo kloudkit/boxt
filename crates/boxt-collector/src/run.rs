@@ -15,11 +15,12 @@ use boxt_core::message::{
     encode_macro_table, faulting_entry, merge_macro_tables,
 };
 use boxt_core::outcome::{Details, FileOutcome, NotCheckedReason, Outcome};
+use boxt_core::pattern::{PatternError, literal_path, path_pattern};
 use boxt_core::settings::Settings;
 
 use crate::pool::{self, Phase, PoolConfig, PoolError, RunReport, default_jobs};
 use crate::router::{ByName, by_name, wants_definitions};
-use crate::walk::{ItemKind, WalkError, walk};
+use crate::walk::{ItemKind, Scope, WalkError, walk};
 use crate::worker::WORKER_SUBCOMMAND;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +103,10 @@ pub enum RunError {
     Executable(io::ErrorKind),
     MacroTable,
     NothingRead,
+    Pattern {
+        pattern: String,
+        error: PatternError,
+    },
 }
 
 impl fmt::Display for RunError {
@@ -116,6 +121,7 @@ impl fmt::Display for RunError {
             RunError::NothingRead => {
                 f.write_str("nothing was read: no input held a file boxt reads")
             }
+            RunError::Pattern { pattern, error } => write!(f, "{pattern}: {error}"),
         }
     }
 }
@@ -138,6 +144,39 @@ impl From<CompileDatabaseError> for RunError {
     fn from(e: CompileDatabaseError) -> Self {
         RunError::CompileDatabase(e)
     }
+}
+
+pub fn scope(settings: &Settings) -> Result<Scope, RunError> {
+    let refused = |pattern: &[u8], error| RunError::Pattern {
+        pattern: String::from_utf8_lossy(pattern).into_owned(),
+        error,
+    };
+    let own_files = settings
+        .own_files
+        .iter()
+        .map(|own| {
+            literal_path(&own.path)
+                .map(|p| (p, own.role))
+                .map_err(|e| refused(own.path.as_bytes(), e))
+        })
+        .collect::<Result<_, _>>()?;
+    let excludes = settings
+        .excludes
+        .iter()
+        .map(|given| {
+            path_pattern(&given.base, &given.pattern)
+                .map(|p| (given.clone(), p))
+                .map_err(|e| refused(given.pattern.as_bytes(), e))
+        })
+        .collect::<Result<_, _>>()?;
+    for decl in &settings.encodings {
+        path_pattern(&decl.pattern.base, &decl.pattern.pattern)
+            .map_err(|e| refused(decl.pattern.pattern.as_bytes(), e))?;
+    }
+    Ok(Scope {
+        own_files,
+        excludes,
+    })
 }
 
 pub fn run(settings: &Settings) -> Result<Collected, RunError> {
@@ -225,7 +264,8 @@ pub fn run_with(
     let limits = &settings.limits;
     let deadline = start.checked_add(Duration::from_secs(limits.get(LimitName::RunWatchdog)));
     let max_len = limits.get(LimitName::EntryMessageBytes);
-    let walked = walk(&settings.inputs)?;
+    let scope = scope(settings)?;
+    let walked = walk(&settings.inputs, &scope)?;
     let config = PoolConfig {
         program: options.program.clone(),
         args: options.args.clone(),
@@ -250,17 +290,29 @@ pub fn run_with(
     let mut stopped = stats.run_watchdog || past(deadline);
 
     let mut planned = Vec::new();
+    let mut files = Vec::new();
     for input in walked {
+        stats.walked += input.items.len() as u64;
         for item in input.items {
-            planned.push((input.input.clone(), item));
+            let path = item.path().clone();
+            let ItemKind::OutOfScope(cause) = item.kind else {
+                planned.push((input.input.clone(), item));
+                continue;
+            };
+            files.push(CollectedFile {
+                key: CanonicalKey::at(input.input.index, path.clone(), EntryPath::job()),
+                location: Location::file(input.input.clone(), Vec::new(), path),
+                outcome: Outcome::new(FileOutcome::OutOfScope { cause }, None),
+                regions: Vec::new(),
+                notes: Vec::new(),
+            });
         }
     }
-    stats.walked = planned.len() as u64;
     stats.largest_file = planned
         .iter()
         .filter_map(|(_, item)| match item.kind {
             ItemKind::File { size } => Some(size),
-            ItemKind::NotChecked(_) => None,
+            _ => None,
         })
         .max()
         .unwrap_or(0);
@@ -276,18 +328,18 @@ pub fn run_with(
         .map(|(input, item)| Pending {
             file_kind: match item.kind {
                 ItemKind::File { .. } => kind_by_path(item.path()),
-                ItemKind::NotChecked(_) => None,
+                _ => None,
             },
             input,
             path: item.path().clone(),
             entry: EntryPath::job(),
         })
         .collect();
-    let mut files = aggregates(
+    files.extend(aggregates(
         &cut,
         NotCheckedReason::LimitExceeded(LimitName::TotalEntries),
         false,
-    );
+    ));
 
     let mut route_jobs = Vec::new();
     let mut definition_jobs = Vec::new();
@@ -307,6 +359,7 @@ pub fn run_with(
                 regions: Vec::new(),
                 notes: Vec::new(),
             }),
+            ItemKind::OutOfScope(_) => unreachable!("out-of-scope items are split out above"),
             ItemKind::File { .. } => {
                 let job = Job {
                     kind: JobKind::Route,

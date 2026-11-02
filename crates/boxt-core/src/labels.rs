@@ -14,6 +14,18 @@ pub const PROJECT_FILE_NONE_FOUND: &str = "none found";
 
 pub const PROJECT_FILE_NAMED: &str = "named by --project";
 
+pub const EXCLUDE: &str = "exclude";
+
+pub const EXCLUDED: &str = "excluded";
+
+pub fn file_count(n: u64) -> String {
+    if n == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{n} files")
+    }
+}
+
 pub const ABOVE_VCS_ROOT_TEXT: &str = "The project file lies above the version-control root of the first input; check that it is meant for this tree.";
 
 pub fn macro_table_cut() -> String {

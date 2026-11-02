@@ -21,6 +21,7 @@ fn scan(dir: &Path) -> Matched {
         limits: Limits::default(),
         encodings: Vec::new(),
         excludes: Vec::new(),
+        own_files: Vec::new(),
         ignored_macros: Default::default(),
         jobs: None,
         compile_database: None,

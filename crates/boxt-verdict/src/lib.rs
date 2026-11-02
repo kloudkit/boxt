@@ -13,8 +13,9 @@ pub use boxt_core;
 use std::fmt;
 
 use boxt_core::message::CollectedFile;
-use boxt_core::outcome::{FileOutcome, sm3_share, verdict_counts};
-use boxt_core::verdict::{Finding, Observation, Profile, ProjectFile, Result, TargetId};
+use boxt_core::outcome::{FileOutcome, OutOfScopeCause, sm3_share, verdict_counts};
+use boxt_core::settings::PathPattern;
+use boxt_core::verdict::{Excluded, Finding, Observation, Profile, ProjectFile, Result, TargetId};
 use boxt_core::version::Versions;
 use boxt_core::{SortedVec, Text, input_scope};
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,7 @@ pub struct VerdictInput<'a> {
     pub roots: &'a [Text],
     pub compile_database_used: bool,
     pub project_file: &'a ProjectFile,
+    pub excludes: &'a [PathPattern],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +80,28 @@ pub fn prepare<'a>(
     })
 }
 
+fn excluded(files: &SortedVec<CollectedFile>, excludes: &[PathPattern]) -> Excluded {
+    let mut patterns: Vec<(PathPattern, u64)> = excludes.iter().map(|p| (p.clone(), 0)).collect();
+    let mut own_files = Vec::new();
+    for file in files.iter() {
+        let FileOutcome::OutOfScope { cause } = &file.outcome.file else {
+            continue;
+        };
+        match cause {
+            OutOfScopeCause::Pattern(pattern) => {
+                if let Some((_, count)) = patterns.iter_mut().find(|(p, _)| p == pattern) {
+                    *count = count.saturating_add(1);
+                }
+            }
+            OutOfScopeCause::OwnFile(role) => own_files.push((file.location.clone(), *role)),
+        }
+    }
+    Excluded {
+        patterns,
+        own_files,
+    }
+}
+
 pub fn build(
     prepared: &Prepared<'_>,
     input: &VerdictInput<'_>,
@@ -97,6 +121,7 @@ pub fn build(
     Ok(Result {
         versions: Versions::CURRENT,
         project_file: input.project_file.clone(),
+        excluded: excluded(input.files, input.excludes),
         input_scope,
         input_scope_text: input_scope::text(input_scope, input.compile_database_used),
         counts: verdict_counts(input.files.iter().map(|f| &f.outcome.file)),

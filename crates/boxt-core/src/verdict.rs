@@ -7,7 +7,8 @@ use crate::identity::FindingId;
 use crate::input_scope::InputScope;
 use crate::location::Location;
 use crate::message::RegionReason;
-use crate::outcome::{FileOutcome, NotCheckedReason, Outcome, Sm3, VerdictCounts};
+use crate::outcome::{FileOutcome, NotCheckedReason, Outcome, OwnFileRole, Sm3, VerdictCounts};
+use crate::settings::PathPattern;
 use crate::sorted::SortedVec;
 use crate::text::Text;
 use crate::version::Versions;
@@ -467,10 +468,17 @@ impl ProjectFile {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Excluded {
+    pub patterns: Vec<(PathPattern, u64)>,
+    pub own_files: Vec<(Location, OwnFileRole)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Result {
     pub versions: Versions,
     pub project_file: ProjectFile,
+    pub excluded: Excluded,
     pub input_scope: InputScope,
     pub input_scope_text: String,
     pub counts: VerdictCounts,
@@ -521,6 +529,37 @@ mod tests {
         let id = json.as_object_mut().unwrap().remove("id").unwrap();
         assert_eq!(id, "0123456789ab-1");
         assert_eq!(json, serde_json::to_value(&finding).unwrap());
+    }
+
+    #[test]
+    fn excluded_counts_serialize_as_pairs_in_their_given_order() {
+        use crate::location::{InputRef, RelPath};
+        let pattern = |p: &str| PathPattern {
+            base: Text::from("/repo"),
+            pattern: Text::from(p),
+        };
+        let excluded = Excluded {
+            patterns: vec![(pattern("z/**"), 3), (pattern("a/**"), 0)],
+            own_files: vec![(
+                Location::file(
+                    InputRef {
+                        index: 0,
+                        given: Text::from("/repo"),
+                    },
+                    Vec::new(),
+                    RelPath::try_from("boxt.yaml").unwrap(),
+                ),
+                OwnFileRole::ProjectFile,
+            )],
+        };
+        let json = serde_json::to_value(&excluded).unwrap();
+        assert_eq!(json["patterns"][0][0]["pattern"], "z/**");
+        assert_eq!(json["patterns"][0][1], 3);
+        assert_eq!(json["patterns"][1][1], 0);
+        assert_eq!(json["own_files"][0][1], "project_file");
+        let back: Excluded = serde_json::from_value(json).unwrap();
+        assert_eq!(back, excluded);
+        assert_eq!(Excluded::default().patterns.len(), 0);
     }
 
     #[test]

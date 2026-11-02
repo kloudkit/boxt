@@ -63,14 +63,56 @@ fn whatwg(bytes: &[u8], encoding: &'static encoding_rs::Encoding) -> Option<Stri
 
 fn code_page(bytes: &[u8], page: u16) -> Option<String> {
     match page {
-        65001 => utf8(bytes),
-        1200 => utf16(bytes, encoding_rs::UTF_16LE, BOM_LE),
-        1201 => utf16(bytes, encoding_rs::UTF_16BE, BOM_BE),
-        28591 => Some(encoding_rs::mem::decode_latin1(bytes).into_owned()),
-        20127 => bytes
+        UTF8_PAGE => utf8(bytes),
+        UTF16LE_PAGE => utf16(bytes, encoding_rs::UTF_16LE, BOM_LE),
+        UTF16BE_PAGE => utf16(bytes, encoding_rs::UTF_16BE, BOM_BE),
+        LATIN1_PAGE => Some(encoding_rs::mem::decode_latin1(bytes).into_owned()),
+        ASCII_PAGE => bytes
             .is_ascii()
             .then(|| encoding_rs::mem::decode_latin1(bytes).into_owned()),
         _ => whatwg(bytes, code_page_encoding(page)?),
+    }
+}
+
+const UTF8_PAGE: u16 = 65001;
+const UTF16LE_PAGE: u16 = 1200;
+const UTF16BE_PAGE: u16 = 1201;
+const LATIN1_PAGE: u16 = 28591;
+const ASCII_PAGE: u16 = 20127;
+const NAMED: [(&str, Encoding); 4] = [
+    ("utf-8", Encoding::Utf8),
+    ("utf-16le", Encoding::Utf16Le),
+    ("utf-16be", Encoding::Utf16Be),
+    ("latin-1", Encoding::Latin1),
+];
+const CODE_PAGE_PREFIX: &str = "windows-";
+
+fn decodes_code_page(page: u16) -> bool {
+    matches!(
+        page,
+        UTF8_PAGE | UTF16LE_PAGE | UTF16BE_PAGE | LATIN1_PAGE | ASCII_PAGE
+    ) || code_page_encoding(page).is_some()
+}
+
+pub fn encoding_from_name(name: &str) -> Option<Encoding> {
+    let name = name.to_ascii_lowercase();
+    if let Some(&(_, encoding)) = NAMED.iter().find(|(n, _)| *n == name) {
+        return Some(encoding);
+    }
+    let digits = name.strip_prefix(CODE_PAGE_PREFIX)?;
+    let page = digits.parse::<u16>().ok()?;
+    let encoding = Encoding::WindowsCodePage(page);
+    (decodes_code_page(page) && encoding_name(encoding) == name).then_some(encoding)
+}
+
+pub fn encoding_name(encoding: Encoding) -> String {
+    let named = |i: usize| NAMED[i].0.to_owned();
+    match encoding {
+        Encoding::Utf8 => named(0),
+        Encoding::Utf16Le => named(1),
+        Encoding::Utf16Be => named(2),
+        Encoding::Latin1 => named(3),
+        Encoding::WindowsCodePage(page) => format!("{CODE_PAGE_PREFIX}{page}"),
     }
 }
 
@@ -214,6 +256,44 @@ mod tests {
         let d = decode(bytes, None).unwrap();
         assert_eq!(d.text, "\u{FEFF}");
         assert_eq!(lines(&d.text), line_count(bytes, None));
+    }
+
+    #[test]
+    fn encoding_names_come_from_the_decode_table() {
+        for (name, encoding) in [
+            ("utf-8", Encoding::Utf8),
+            ("UTF-16LE", Encoding::Utf16Le),
+            ("utf-16be", Encoding::Utf16Be),
+            ("Latin-1", Encoding::Latin1),
+            ("windows-1252", Encoding::WindowsCodePage(1252)),
+            ("WINDOWS-932", Encoding::WindowsCodePage(932)),
+            ("windows-65001", Encoding::WindowsCodePage(65001)),
+            ("windows-20127", Encoding::WindowsCodePage(20127)),
+        ] {
+            assert_eq!(encoding_from_name(name), Some(encoding), "{name}");
+            assert_eq!(encoding_from_name(&encoding_name(encoding)), Some(encoding));
+        }
+        for (name, encoding) in NAMED {
+            assert_eq!(encoding_name(encoding), name);
+        }
+        for refused in [
+            "utf-16",
+            "cp1252",
+            "windows-437",
+            "windows-01252",
+            "windows-",
+            "windows-+1252",
+            "windows-99999",
+            "latin1",
+            "",
+        ] {
+            assert_eq!(encoding_from_name(refused), None, "{refused}");
+        }
+        for page in 0..=u16::MAX {
+            let known = encoding_from_name(&format!("windows-{page}")).is_some();
+            let decodes = decode(b"aa", Some(Encoding::WindowsCodePage(page))).is_ok();
+            assert_eq!(known, decodes, "{page}");
+        }
     }
 
     #[test]

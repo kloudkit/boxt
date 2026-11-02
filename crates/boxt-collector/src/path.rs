@@ -1,9 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::{Component, Path, PathBuf};
 
 use boxt_core::Text;
 use boxt_core::location::RelPath;
 use boxt_core::message::{Job, JobFile};
-use boxt_core::settings::PathPattern;
+use boxt_core::pattern::Pattern;
 
 #[cfg(unix)]
 pub fn text_from_path(path: &Path) -> Text {
@@ -66,91 +67,45 @@ pub fn job_path(job: &Job) -> Option<PathBuf> {
     }
 }
 
-struct Glob<'a> {
-    pattern: &'a [u8],
-    path: &'a [u8],
-    memo: Vec<Option<bool>>,
-}
-
-impl Glob<'_> {
-    fn at(&mut self, pi: usize, si: usize) -> bool {
-        let slot = pi * (self.path.len() + 1) + si;
-        if let Some(known) = self.memo[slot] {
-            return known;
-        }
-        let (pattern, path) = (self.pattern, self.path);
-        let found = match pattern.get(pi) {
-            None => si == path.len(),
-            Some(b'*') if pattern.get(pi + 1) == Some(&b'*') => {
-                let next = if pattern.get(pi + 2) == Some(&b'/') {
-                    pi + 3
-                } else {
-                    pi + 2
-                };
-                (si..=path.len()).any(|i| self.at(next, i))
+pub fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.parent().is_some() {
+                    out.pop();
+                }
             }
-            Some(b'*') => (si..=path.len())
-                .take_while(|&i| i == si || path[i - 1] != b'/')
-                .any(|i| self.at(pi + 1, i)),
-            Some(b'?') => path.get(si).is_some_and(|&c| c != b'/') && self.at(pi + 1, si + 1),
-            Some(&c) => path.get(si) == Some(&c) && self.at(pi + 1, si + 1),
-        };
-        self.memo[slot] = Some(found);
-        found
-    }
-}
-
-fn glob(pattern: &[u8], path: &[u8]) -> bool {
-    let mut g = Glob {
-        pattern,
-        path,
-        memo: vec![None; (pattern.len() + 1) * (path.len() + 1)],
-    };
-    g.at(0, 0)
-}
-
-fn separators(bytes: &[u8]) -> Vec<u8> {
-    let mut out = bytes.to_vec();
-    if cfg!(windows) {
-        for b in &mut out {
-            if *b == b'\\' {
-                *b = b'/';
-            }
+            other => out.push(other.as_os_str()),
         }
-    }
-    while out.len() > 1 && out.last() == Some(&b'/') {
-        out.pop();
     }
     out
 }
 
-pub fn declared_for(pattern: &PathPattern, on_disk: &Text) -> bool {
-    let path = separators(on_disk.as_bytes());
-    let base = separators(pattern.base.as_bytes());
-    let rel = if base.is_empty() {
-        &path[..]
-    } else {
-        match path.strip_prefix(base.as_slice()).and_then(|r| {
-            r.strip_prefix(b"/")
-                .or_else(|| base.ends_with(b"/").then_some(r))
-        }) {
-            Some(rel) => rel,
-            None => return false,
-        }
-    };
-    glob(&separators(pattern.pattern.as_bytes()), rel)
+pub fn match_text(path: &Path) -> io::Result<Text> {
+    let absolute = std::path::absolute(path)?;
+    Ok(display_text_from_path(&lexical(&absolute)))
+}
+
+pub fn join_match_text(root: &Text, rel: &RelPath) -> Text {
+    let mut bytes = root.as_bytes().to_vec();
+    if bytes.last() != Some(&b'/') {
+        bytes.push(b'/');
+    }
+    bytes.extend_from_slice(rel.as_bytes());
+    Text::from_bytes(bytes)
+}
+
+pub fn matches(pattern: &Pattern, path: &Text) -> bool {
+    pattern.is_match(path.as_bytes()) || (cfg!(windows) && pattern.is_match_folded(path.as_bytes()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use boxt_core::pattern::path_pattern;
 
-    fn decl(base: &str, pattern: &str) -> PathPattern {
-        PathPattern {
-            base: Text::from(base),
-            pattern: Text::from(pattern),
-        }
-    }
+    use super::*;
 
     #[cfg(windows)]
     #[test]
@@ -167,21 +122,32 @@ mod tests {
     }
 
     #[test]
-    fn encoding_patterns_match_under_their_base() {
-        let file = Text::from("/repo/legacy/win/a.c");
-        let matches = |base: &str, pattern: &str| declared_for(&decl(base, pattern), &file);
-        assert!(matches("/repo", "legacy/**"));
-        assert!(matches("/repo/", "legacy/*/a.c"));
-        assert!(matches("/repo", "**/*.c"));
-        assert!(!matches("/repo", "legacy/*.c"));
-        assert!(!matches("/other", "**"));
-        assert!(!matches("/rep", "**"));
-        assert!(matches("/repo", "legacy/win/?.c"));
-        assert!(matches("/repo/legacy", "win/*.c"));
-        assert!(matches("/", "repo/**"));
-        let long = Text::from(format!("/repo/{}b", "a".repeat(200)).as_str());
-        let started = std::time::Instant::now();
-        assert!(!declared_for(&decl("/repo", &"*a".repeat(30)), &long));
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    fn lexical_drops_dots_and_pops_parents() {
+        assert_eq!(lexical(Path::new("/a/./b/../c")), Path::new("/a/c"));
+        assert_eq!(lexical(Path::new("/../a")), Path::new("/a"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_match_text_is_absolute_and_lexical() {
+        let here = std::env::current_dir().unwrap();
+        let text = match_text(Path::new("a/./b/../c.c")).unwrap();
+        let expected = display_text_from_path(&here.join("a/c.c"));
+        assert_eq!(text, expected);
+        let joined = join_match_text(&Text::from("/"), &RelPath::new(Text::from("x/y")).unwrap());
+        assert_eq!(joined, Text::from("/x/y"));
+        let joined = join_match_text(&Text::from("/r"), &RelPath::new(Text::from("x")).unwrap());
+        assert_eq!(joined, Text::from("/r/x"));
+    }
+
+    #[test]
+    fn matching_folds_case_only_on_windows() {
+        let p = path_pattern(&Text::from("/repo"), &Text::from("third_party/**")).unwrap();
+        assert!(matches(&p, &Text::from("/repo/third_party/a.c")));
+        assert_eq!(
+            matches(&p, &Text::from("/repo/Third_Party/a.c")),
+            cfg!(windows)
+        );
+        assert!(!matches(&p, &Text::from("/repo/src/a.c")));
     }
 }

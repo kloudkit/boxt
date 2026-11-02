@@ -2,13 +2,16 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::num::NonZeroU32;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
+use boxt_collector::boxt_core::decode::encoding_from_name;
 use boxt_collector::boxt_core::limits::{LIMITS, LimitError, LimitName, Limits};
+use boxt_collector::boxt_core::pattern::{PatternError, path_pattern};
+use boxt_collector::boxt_core::settings::{EncodingDecl, PathPattern};
 use boxt_collector::boxt_core::verdict::{IdError, ProjectFile, TargetId};
 use boxt_collector::boxt_core::version::{PROJECT_FILE_VERSION, SchemaVersion, UnsupportedVersion};
 use boxt_collector::boxt_core::{SortedVec, Text};
-use boxt_collector::path::display_text_from_path;
+use boxt_collector::path::{display_text_from_path, lexical, match_text};
 use boxt_render::escape;
 use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -20,13 +23,18 @@ pub const NAMES: [&str; 2] = ["boxt.yaml", ".boxt.yaml"];
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_DEPTH: usize = 64;
 const VCS_MARKERS: [&str; 3] = [".git", ".hg", ".svn"];
-const KEYS: &str = "schema, targets, jobs and limits";
+const KEYS: &str = "schema, targets, jobs, limits, exclude and encodings";
+const DECL_KEYS: &str = "path and encoding";
+pub const ENCODING_NAMES: &str =
+    "utf-8, utf-16le, utf-16be, latin-1, or windows-NNNN for a code page boxt decodes";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileSettings {
     pub targets: Option<SortedVec<TargetId>>,
     pub jobs: Option<NonZeroU32>,
     pub limits: Vec<(LimitName, u64)>,
+    pub exclude: Vec<PathPattern>,
+    pub encodings: Vec<EncodingDecl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +42,7 @@ pub struct Project {
     pub file: ProjectFile,
     pub settings: FileSettings,
     pub vcs_root: Option<PathBuf>,
+    pub own_path: Option<Text>,
 }
 
 impl Project {
@@ -74,7 +83,17 @@ pub enum Problem {
     },
     UnknownKey(String),
     UnknownLimit(String),
-    MissingKey(&'static str),
+    UnknownDeclKey(String),
+    MissingKey(String),
+    BadPattern {
+        key: String,
+        value: String,
+        error: PatternError,
+    },
+    BadEncoding {
+        key: String,
+        value: String,
+    },
     BadValue {
         key: String,
         expected: &'static str,
@@ -91,6 +110,20 @@ pub enum Problem {
         key: String,
         error: LimitError,
     },
+}
+
+pub fn encoding_problem(key: &str, value: &str) -> String {
+    if value.eq_ignore_ascii_case("utf-16") {
+        format!(
+            "{key}: {} names no byte order; use utf-16le or utf-16be",
+            quoted(value)
+        )
+    } else {
+        format!(
+            "{key}: {} is not an encoding boxt reads; use {ENCODING_NAMES}",
+            quoted(value)
+        )
+    }
 }
 
 fn shown(path: &Path) -> String {
@@ -135,7 +168,16 @@ impl fmt::Display for Problem {
                 }
                 Ok(())
             }
+            Problem::UnknownDeclKey(key) => write!(
+                f,
+                "unknown key {}; an encoding declaration holds only {DECL_KEYS}",
+                quoted(key)
+            ),
             Problem::MissingKey(key) => write!(f, "missing key '{key}'"),
+            Problem::BadPattern { key, value, error } => {
+                write!(f, "{key}: {} is refused: {error}", quoted(value))
+            }
+            Problem::BadEncoding { key, value } => f.write_str(&encoding_problem(key, value)),
             Problem::BadValue {
                 key,
                 expected,
@@ -190,6 +232,13 @@ impl fmt::Display for ProjectError {
 
 impl std::error::Error for ProjectError {}
 
+fn own_path(path: &Path) -> Result<Text, ProjectError> {
+    match_text(path).map_err(|error| ProjectError::Absolute {
+        input: path.to_path_buf(),
+        error,
+    })
+}
+
 pub fn load(first_input: &Path, named: Option<&Path>) -> Result<Project, ProjectError> {
     if let Some(path) = named {
         return Ok(Project {
@@ -198,6 +247,7 @@ pub fn load(first_input: &Path, named: Option<&Path>) -> Result<Project, Project
             },
             settings: read(path)?,
             vcs_root: None,
+            own_path: Some(own_path(path)?),
         });
     }
     let start = search_start(first_input)?;
@@ -207,6 +257,7 @@ pub fn load(first_input: &Path, named: Option<&Path>) -> Result<Project, Project
             file: ProjectFile::NoneFound,
             settings: FileSettings::default(),
             vcs_root,
+            own_path: None,
         });
     };
     let above_vcs_root = found
@@ -220,6 +271,7 @@ pub fn load(first_input: &Path, named: Option<&Path>) -> Result<Project, Project
         },
         settings: read(&found)?,
         vcs_root,
+        own_path: Some(own_path(&found)?),
     })
 }
 
@@ -234,22 +286,6 @@ fn search_start(first_input: &Path) -> Result<PathBuf, ProjectError> {
         Some(parent) if is_file => Ok(parent.to_path_buf()),
         _ => Ok(absolute),
     }
-}
-
-fn lexical(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if out.parent().is_some() {
-                    out.pop();
-                }
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
 }
 
 fn exists(path: &Path) -> Result<bool, ProjectError> {
@@ -319,7 +355,13 @@ fn read(path: &Path) -> Result<FileSettings, ProjectError> {
         return Err(invalid(Problem::TooLarge { size }));
     }
     let text = String::from_utf8(bytes).map_err(|_| invalid(Problem::NotUtf8))?;
-    parse(&text).map_err(invalid)
+    let folder = own_path(path)?;
+    let base = match folder.as_bytes().iter().rposition(|&b| b == b'/') {
+        Some(0) => Text::from("/"),
+        Some(i) => Text::from_bytes(folder.as_bytes()[..i].to_vec()),
+        None => folder,
+    };
+    parse(&text, &base).map_err(invalid)
 }
 
 fn options() -> Options {
@@ -375,6 +417,10 @@ struct Raw {
     jobs: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     limits: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    exclude: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    encodings: Option<Value>,
 }
 
 fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
@@ -483,7 +529,7 @@ impl<'de> Deserialize<'de> for Value {
     }
 }
 
-pub fn parse(text: &str) -> Result<FileSettings, Problem> {
+pub fn parse(text: &str, base: &Text) -> Result<FileSettings, Problem> {
     let raw: Raw =
         serde_saphyr::from_str_with_options(text, options()).map_err(|e| problem_of(&e))?;
     check_schema(raw.schema)?;
@@ -491,12 +537,113 @@ pub fn parse(text: &str) -> Result<FileSettings, Problem> {
         targets: raw.targets.map(targets).transpose()?,
         jobs: raw.jobs.map(jobs).transpose()?,
         limits: raw.limits.map(limits).transpose()?.unwrap_or_default(),
+        exclude: raw
+            .exclude
+            .map(|v| exclude(v, base))
+            .transpose()?
+            .unwrap_or_default(),
+        encodings: raw
+            .encodings
+            .map(|v| encodings(v, base))
+            .transpose()?
+            .unwrap_or_default(),
     })
+}
+
+fn list(key: &str, value: Value, expected: &'static str) -> Result<Vec<Value>, Problem> {
+    match value {
+        Value::Seq(items) => Ok(items),
+        other => Err(Problem::BadValue {
+            key: key.to_owned(),
+            expected,
+            found: other.found(),
+        }),
+    }
+}
+
+fn pattern(key: String, value: Value, base: &Text) -> Result<PathPattern, Problem> {
+    let Value::Str(source) = value else {
+        return Err(Problem::BadValue {
+            key,
+            expected: "a path pattern",
+            found: value.found(),
+        });
+    };
+    let given = PathPattern {
+        base: base.clone(),
+        pattern: Text::from(source.as_str()),
+    };
+    path_pattern(&given.base, &given.pattern).map_err(|error| Problem::BadPattern {
+        key,
+        value: source,
+        error,
+    })?;
+    Ok(given)
+}
+
+fn exclude(value: Value, base: &Text) -> Result<Vec<PathPattern>, Problem> {
+    list("exclude", value, "a list of path patterns")?
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| pattern(format!("exclude[{i}]"), item, base))
+        .collect()
+}
+
+fn encodings(value: Value, base: &Text) -> Result<Vec<EncodingDecl>, Problem> {
+    list(
+        "encodings",
+        value,
+        "a list of {path: PATTERN, encoding: NAME} mappings",
+    )?
+    .into_iter()
+    .enumerate()
+    .map(|(i, item)| declaration(i, item, base))
+    .collect()
+}
+
+fn declaration(i: usize, value: Value, base: &Text) -> Result<EncodingDecl, Problem> {
+    let key = format!("encodings[{i}]");
+    let Value::Map(entries) = value else {
+        return Err(Problem::BadValue {
+            key,
+            expected: "a mapping with path and encoding",
+            found: value.found(),
+        });
+    };
+    let mut path = None;
+    let mut name = None;
+    for (field, value) in entries {
+        match field {
+            Value::Str(f) if f == "path" => path = Some(value),
+            Value::Str(f) if f == "encoding" => name = Some(value),
+            Value::Str(f) => return Err(Problem::UnknownDeclKey(format!("{key}.{f}"))),
+            other => {
+                return Err(Problem::BadValue {
+                    key,
+                    expected: "path and encoding as keys",
+                    found: other.found(),
+                });
+            }
+        }
+    }
+    let path = path.ok_or_else(|| Problem::MissingKey(format!("{key}.path")))?;
+    let name = name.ok_or_else(|| Problem::MissingKey(format!("{key}.encoding")))?;
+    let pattern = pattern(format!("{key}.path"), path, base)?;
+    let key = format!("{key}.encoding");
+    let Value::Str(name) = name else {
+        return Err(Problem::BadValue {
+            key,
+            expected: "an encoding name",
+            found: name.found(),
+        });
+    };
+    let encoding = encoding_from_name(&name).ok_or(Problem::BadEncoding { key, value: name })?;
+    Ok(EncodingDecl { pattern, encoding })
 }
 
 fn check_schema(value: Option<Value>) -> Result<(), Problem> {
     let raw = match value {
-        None => return Err(Problem::MissingKey("schema")),
+        None => return Err(Problem::MissingKey("schema".to_owned())),
         Some(Value::Str(raw)) => raw,
         Some(other) => {
             return Err(Problem::BadValue {
@@ -598,7 +745,13 @@ fn limits(value: Value) -> Result<Vec<(LimitName, u64)>, Problem> {
 
 #[cfg(test)]
 mod tests {
+    use boxt_collector::boxt_core::settings::Encoding;
+
     use super::*;
+
+    fn parse(text: &str) -> Result<FileSettings, Problem> {
+        super::parse(text, &Text::from("/repo"))
+    }
 
     fn problem(text: &str) -> String {
         parse(text).unwrap_err().to_string()
@@ -757,7 +910,10 @@ mod tests {
             .split("```")
             .next()
             .unwrap();
-        assert!(parse(example).unwrap().targets.is_some());
+        let example = parse(example).unwrap();
+        assert!(example.targets.is_some());
+        assert!(!example.exclude.is_empty());
+        assert!(!example.encodings.is_empty());
         assert!(doc.contains(&format!("now `{PROJECT_FILE_VERSION}`")));
         for spec in LIMITS {
             assert!(doc.contains(&format!("`{}`", spec.flag)), "{}", spec.flag);
@@ -767,14 +923,106 @@ mod tests {
             "`--jobs N`",
             "`--limit NAME=VALUE`",
             "`--project FILE`",
+            "`--exclude PATTERN`",
+            "`--encoding PATTERN=NAME`",
         ] {
             assert!(doc.contains(flag), "{flag}");
         }
     }
 
     #[test]
-    fn lexical_drops_dots_and_pops_parents() {
-        assert_eq!(lexical(Path::new("/a/./b/../c")), Path::new("/a/c"));
-        assert_eq!(lexical(Path::new("/../a")), Path::new("/a"));
+    fn excludes_and_encodings_keep_the_file_base_and_their_order() {
+        let settings = parse(
+            "schema: \"1.0\"\nexclude: [third_party/**, \"tests/*.c\"]\nencodings:\n  - {path: legacy/**, encoding: Windows-1252}\n  - {path: \"**/*.c\", encoding: utf-16le}\n",
+        )
+        .unwrap();
+        let at = |p: &str| PathPattern {
+            base: Text::from("/repo"),
+            pattern: Text::from(p),
+        };
+        assert_eq!(settings.exclude, [at("third_party/**"), at("tests/*.c")]);
+        assert_eq!(
+            settings.encodings,
+            [
+                EncodingDecl {
+                    pattern: at("legacy/**"),
+                    encoding: Encoding::WindowsCodePage(1252),
+                },
+                EncodingDecl {
+                    pattern: at("**/*.c"),
+                    encoding: Encoding::Utf16Le,
+                },
+            ]
+        );
+        assert_eq!(parse("schema: \"1.0\"\nexclude: []\n").unwrap().exclude, []);
+    }
+
+    #[test]
+    fn bad_patterns_and_encodings_name_their_key() {
+        for (text, expected) in [
+            (
+                "exclude: [\"../x/**\"]",
+                "exclude[0]: '../x/**' is refused: the pattern has a '.' or '..' segment",
+            ),
+            (
+                "exclude: [a/**, \"\"]",
+                "exclude[1]: '' is refused: the pattern is empty",
+            ),
+            (
+                "exclude: [/abs/**]",
+                "exclude[0]: '/abs/**' is refused: the pattern is absolute",
+            ),
+            (
+                "exclude: [\"[a\"]",
+                "exclude[0]: '[a' is refused: the pattern is not a valid glob",
+            ),
+            (
+                "exclude: [3]",
+                "exclude[0]: expected a path pattern, found 3",
+            ),
+            (
+                "exclude: third_party",
+                "exclude: expected a list of path patterns, found 'third_party'",
+            ),
+            (
+                "encodings: [{path: a/**, encoding: windows-437}]",
+                "encodings[0].encoding: 'windows-437' is not an encoding boxt reads; use utf-8,",
+            ),
+            (
+                "encodings: [{path: a/**, encoding: UTF-16}]",
+                "encodings[0].encoding: 'UTF-16' names no byte order; use utf-16le or utf-16be",
+            ),
+            (
+                "encodings: [{path: a/**, encoding: cp1252}]",
+                "encodings[0].encoding: 'cp1252' is not an encoding",
+            ),
+            (
+                "encodings: [{path: a/**, encoding: utf-8}, {path: ../b, encoding: utf-8}]",
+                "encodings[1].path: '../b' is refused:",
+            ),
+            (
+                "encodings: [{path: a/**}]",
+                "missing key 'encodings[0].encoding'",
+            ),
+            (
+                "encodings: [{encoding: utf-8}]",
+                "missing key 'encodings[0].path'",
+            ),
+            (
+                "encodings: [{path: a, encoding: utf-8, colour: red}]",
+                "unknown key 'encodings[0].colour'; an encoding declaration holds only path and encoding",
+            ),
+            (
+                "encodings: [a/**]",
+                "encodings[0]: expected a mapping with path and encoding, found 'a/**'",
+            ),
+            (
+                "encodings: {a: utf-8}",
+                "encodings: expected a list of {path: PATTERN, encoding: NAME} mappings, found a mapping",
+            ),
+        ] {
+            let got = problem(&format!("schema: \"1.0\"\n{text}\n"));
+            assert!(got.starts_with(expected), "{text}: {got}");
+        }
     }
 }
